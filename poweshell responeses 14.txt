@@ -1,0 +1,39 @@
+PS C:\Users\user\Desktop\albania test\backend\scripts> node scripts/run_all_vendime.js --year=2026 --limit=80 --concurrency=1
+node:internal/modules/cjs/loader:1451
+  throw err;
+  ^
+
+Error: Cannot find module 'C:\Users\user\Desktop\albania test\backend\scripts\scripts\run_all_vendime.js'
+    at Module._resolveFilename (node:internal/modules/cjs/loader:1448:15)
+    at defaultResolveImpl (node:internal/modules/cjs/loader:1059:19)
+    at resolveForCJSWithHooks (node:internal/modules/cjs/loader:1064:22)
+    at Module._load (node:internal/modules/cjs/loader:1234:25)
+    at TracingChannel.traceSync (node:diagnostics_channel:328:14)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:245:24)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+    at node:internal/main/run_main_module:33:47 {
+  code: 'MODULE_NOT_FOUND',
+  requireStack: []
+}
+
+Node.js v24.13.1
+PS C:\Users\user\Desktop\albania test\backend\scripts> cd "$env:USERPROFILE\Desktop\albania test\backend"
+PS C:\Users\user\Desktop\albania test\backend> dir .\scripts\run_all_vendime.js
+
+
+    Directory: C:\Users\user\Desktop\albania test\backend\scripts
+
+
+Mode                 LastWriteTime         Length Name
+----                 -------------         ------ ----
+-a----         2/14/2026   8:01 PM           9767 run_all_vendime.js
+
+
+PS C:\Users\user\Desktop\albania test\backend> node .\scripts\run_all_vendime.js --year=2026 --limit=80 --concurrency=1
+ERROR: DATABASE_URL env var is not set.
+PS C:\Users\user\Desktop\albania test\backend> cd "$env:USERPROFILE\Desktop\albania test\backend"
+PS C:\Users\user\Desktop\albania test\backend> node .\index.js
+[dotenv@17.3.1] injecting env (2) from .env -- tip: ⚙️  enable debug logging with { debug: true }
+LOADED INDEX.JS FROM: C:\Users\user\Desktop\albania test\backend\index.js
+Server running on http://localhost:5050
+PS C:\Users\user\Desktop\albania test\backend>

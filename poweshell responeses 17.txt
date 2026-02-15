@@ -1,0 +1,61 @@
+PS C:\Users\user\Desktop\albania test> psql -h localhost -p 5432 -U postgres -d transparency_radar                                                                                                                              
+Password for user postgres: 
+
+Pager usage is off.
+psql (18.1)
+WARNING: Console code page (65001) differs from Windows code page (1252)
+         8-bit characters might not work correctly. See psql reference
+         page "Notes for Windows users" for details.
+Type "help" for help.
+
+transparency_radar=# UPDATE source_registry sr
+transparency_radar-# SET cooldown_until_utc = NULL,
+transparency_radar-#     last_error_type = NULL
+transparency_radar-# FROM municipalities m
+transparency_radar-# WHERE sr.municipality_id = m.id
+transparency_radar-#   AND sr.is_primary = TRUE
+transparency_radar-#   AND m.name_key = 'bulqize';
+UPDATE 1
+transparency_radar=#
+transparency_radar=# 
+transparency_radar=# 
+transparency_radar=# 
+transparency_radar=# 
+transparency_radar=# 
+transparency_radar=# 
+transparency_radar=# 
+transparency_radar=# 
+transparency_radar=# UPDATE source_registry sr
+transparency_radar-# SET vendime_url = 'https://durres.gov.al/vendime-te-keshillit-bashkiak/'
+transparency_radar-# FROM municipalities m
+transparency_radar-# WHERE sr.municipality_:contentReference[oaicite:16]{index=16}imary = TRUE AND m.name_key = 'durres';
+ERROR:  syntax error at or near ":"
+LINE 4: WHERE sr.municipality_:contentReference[oaicite:16]{index=16...
+                              ^
+transparency_radar=#
+transparency_radar=# UPDATE source_registry sr
+transparency_radar-# SET vendime_url = 'https://elbasani.gov.al/keshilli/vendimet-e-keshillit/'
+transparency_radar-# FROM municipalities m
+transparency_radar-# WHERE sr.municipality_id = m.id AND sr.is_primary = TRUE AND m.name_key = 'elbasan';
+UPDATE 1
+transparency_radar=#
+transparency_radar=# UPDATE source_registry sr
+transparency_radar-# SET vendime_url = 'https://bashkiashkoder.gov.al/vendimet-e-keshillit-bashkiak-2/'
+transparency_radar-# FROM municipalities m
+transparency_radar-# WHERE sr.municipality_id = m.id AND sr.is_primary = TRUE AND m.name_key = 'shkoder';
+UPDATE 1
+transparency_radar=#
+transparency_radar=# UPDATE source_registry sr
+transparency_radar-# SET vendime_url = 'https://vlora.gov.al/transparenca/vendimet-e-keshillit/'
+transparency_radar-# FROM municipalities m
+transparency_radar-# WHERE sr.municipality_id = m.id AND sr.is_primary = TRUE AND m.name_key = 'vlore';
+UPDATE 1
+transparency_radar=# // many sites use "Shkarko" as title; accept based on URL path too
+ERROR:  syntax error at or near "//"
+LINE 1: // many sites use "Shkarko" as title;
+        ^
+transparency_radar-# if (s.includes("/vendim") || s.includes("/vendime")) return true;
+ERROR:  syntax error at or near "accept"
+LINE 1: accept based on URL path too
+        ^
+transparency_radar=#

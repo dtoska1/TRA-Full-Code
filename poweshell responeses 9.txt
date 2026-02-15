@@ -1,0 +1,69 @@
+transparency_radar=# SELECT id, name_sq, name_key
+transparency_radar-# FROM municipalities
+transparency_radar-# WHERE name_key = 'or';
+                  id                  | name_sq | name_key
+--------------------------------------+---------+----------
+ d244a459-3d50-4f7a-9ff9-7769a93fb50d | Vorë    | or
+ de8bd467-73a5-4b3f-b7d4-3093162ddd4e | Korçë   | or
+(2 rows)
+
+transparency_radar=# UPDATE municipalities
+transparency_radar-# SET name_key = name_key || '_' || left(id::text, 8)
+transparency_radar-# WHERE name_key IN (
+transparency_radar(#   SELECT name_key
+transparency_radar(#   FROM municipalities
+transparency_radar(#   GROUP BY name_key
+transparency_radar(#   HAVING count(*) > 1
+transparency_radar(# );
+UPDATE 2
+transparency_radar=# CREATE UNIQUE INDEX municipalities_name_key_uq
+transparency_radar-# ON municipalities(name_key);
+CREATE INDEX
+transparency_radar=# UPDATE municipalities
+transparency_radar-# SET name_key =
+transparency_radar-#   lower(name_sq);
+UPDATE 61
+transparency_radar=#
+transparency_radar=# -- Replace Albanian-specific characters first
+transparency_radar=# UPDATE municipalities
+transparency_radar-# SET name_key = replace(replace(replace(name_key, 'ë', 'e'), 'ç', 'c'), '’', '');
+UPDATE 61
+transparency_radar=#
+transparency_radar=# -- Remove everything not [a-z0-9]
+transparency_radar=# UPDATE municipalities
+transparency_radar-# SET name_key = regexp_replace(name_key, '[^a-z0-9]+', '', 'g');
+UPDATE 61
+transparency_radar=# SELECT name_sq, name_key
+transparency_radar-# FROM municipalities
+transparency_radar-# WHERE name_sq ILIKE '%saran%';
+ name_sq | name_key
+---------+----------
+ Sarandë | sarand
+(1 row)
+
+transparency_radar=# SELECT name_sq,
+transparency_radar-#        length(name_sq) AS len_chars,
+transparency_radar-#        octet_length(name_sq) AS len_bytes,
+transparency_radar-#        encode(name_sq::bytea,'hex') AS hex
+transparency_radar-# FROM municipalities
+transparency_radar-# WHERE name_sq ILIKE '%saran%';
+ name_sq | len_chars | len_bytes |       hex
+---------+-----------+-----------+------------------
+ Sarandë |         7 |         8 | 536172616e64c3ab
+(1 row)
+
+transparency_radar=# SELECT id FROM municipalities WHERE name_key = 'sarande' LIMIT 1;
+ id
+----
+(0 rows)
+
+transparency_radar=# \set k 'sarande'
+transparency_radar=# SELECT id FROM municipalities WHERE name_key = :'k' LIMIT 1;
+ id
+----
+(0 rows)
+
+transparency_radar=# SELECT id, name_sq, name_key FROM municipalities WHERE name_key='or';
+ id | name_sq | name_key
+----+---------+----------
+(0 rows)

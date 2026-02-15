@@ -1,0 +1,152 @@
+transparency_radar=# SELECT
+transparency_radar-#   m.name_sq,
+transparency_radar-#   COUNT(*) FILTER (WHERE i.category='Vendime')                         AS vendime_total,
+transparency_radar-#   COUNT(*) FILTER (WHERE i.category='Vendime' AND EXTRACT(YEAR FROM i.published_date)=2026) AS vendime_2026,
+transparency_radar-#   COUNT(*) FILTER (WHERE i.category='Vendime' AND EXTRACT(YEAR FROM i.published_date)=2025) AS vendime_2025,
+transparency_radar-#   MAX(i.created_at) FILTER (WHERE i.category='Vendime')                AS last_ingested_utc
+transparency_radar-# FROM municipalities m
+transparency_radar-# LEFT JOIN items i ON i.municipality_id = m.id
+transparency_radar-# GROUP BY m.name_sq
+transparency_radar-# ORDER BY vendime_total DESC;
+        name_sq        | vendime_total | vendime_2026 | vendime_2025 |       last_ingested_utc
+-----------------------+---------------+--------------+--------------+-------------------------------
+ Bulqizë               |            80 |            0 |            0 | 2026-02-14 02:29:39.464754+01
+ Sarandë               |            80 |            0 |            0 | 2026-02-14 02:29:52.165545+01
+ Berat                 |            62 |            0 |            0 | 2026-02-14 02:29:39.004854+01
+ Kamëz                 |            46 |            0 |           15 | 2026-02-14 18:13:44.195166+01
+ Korçë                 |            37 |            0 |            0 | 2026-02-13 20:11:06.947641+01
+ Kukës                 |            31 |            0 |            0 | 2026-02-13 20:11:07.575865+01
+ Tiranë                |            11 |           11 |            0 | 2026-02-13 17:11:09.123523+01
+ Kavajë                |             3 |            0 |            0 | 2026-02-13 20:10:52.827288+01
+ Lezhë                 |             2 |            0 |            0 | 2026-02-13 19:34:57.762082+01
+ Skrapar               |             1 |            0 |            0 | 2026-02-13 20:11:12.533705+01
+ Përmet                |             0 |            0 |            0 |
+ Vlorë                 |             0 |            0 |            0 |
+ Gramsh                |             0 |            0 |            0 |
+ Dibër                 |             0 |            0 |            0 |
+ Belsh                 |             0 |            0 |            0 |
+ Krujë                 |             0 |            0 |            0 |
+ Libohovë              |             0 |            0 |            0 |
+ Tropojë               |             0 |            0 |            0 |
+ Mat                   |             0 |            0 |            0 |
+ Devoll                |             0 |            0 |            0 |
+ Memaliaj              |             0 |            0 |            0 |
+ Shkodër               |             0 |            0 |            0 |
+ Divjakë               |             0 |            0 |            0 |
+ Pustec                |             0 |            0 |            0 |
+ Gjirokastër           |             0 |            0 |            0 |
+ Selenicë              |             0 |            0 |            0 |
+ Cërrik                |             0 |            0 |            0 |
+ Pogradec              |             0 |            0 |            0 |
+ Himarë                |             0 |            0 |            0 |
+ Delvinë               |             0 |            0 |            0 |
+ Roskovec              |             0 |            0 |            0 |
+ Rrogozhinë            |             0 |            0 |            0 |
+ Durrës                |             0 |            0 |            0 |
+ Klos                  |             0 |            0 |            0 |
+ Patos                 |             0 |            0 |            0 |
+ Librazhd              |             0 |            0 |            0 |
+ Finiq                 |             0 |            0 |            0 |
+ Prrenjas              |             0 |            0 |            0 |
+ Kuçovë                |             0 |            0 |            0 |
+ Mirditë               |             0 |            0 |            0 |
+ Poliçan               |             0 |            0 |            0 |
+ Fushë-Arrëz           |             0 |            0 |            0 |
+ Kolonjë               |             0 |            0 |            0 |
+ Dropull               |             0 |            0 |            0 |
+ Lushnjë               |             0 |            0 |            0 |
+ Shijak                |             0 |            0 |            0 |
+ Vau i Dejës           |             0 |            0 |            0 |
+ Konispol              |             0 |            0 |            0 |
+ Has                   |             0 |            0 |            0 |
+ Kurbin                |             0 |            0 |            0 |
+ Fier                  |             0 |            0 |            0 |
+ Maliq                 |             0 |            0 |            0 |
+ Tepelenë              |             0 |            0 |            0 |
+ Këlcyrë               |             0 |            0 |            0 |
+ Pukë                  |             0 |            0 |            0 |
+ Dimal (Ura Vajgurore) |             0 |            0 |            0 |
+ Malësi e Madhe        |             0 |            0 |            0 |
+ Mallakastër           |             0 |            0 |            0 |
+ Vorë                  |             0 |            0 |            0 |
+ Elbasan               |             0 |            0 |            0 |
+ Peqin                 |             0 |            0 |            0 |
+(61 rows)
+
+transparency_radar=# SELECT
+transparency_radar-#   m.name_sq,
+transparency_radar-#   sr.vendime_url,
+transparency_radar-#   sr.last_error_type,
+transparency_radar-#   sr.cooldown_until_utc,
+transparency_radar-#   sr.last_seen_utc
+transparency_radar-# FROM source_registry sr
+transparency_radar-# JOIN municipalities m ON m.id = sr.municipality_id
+transparency_radar-# WHERE sr.is_primary = TRUE
+transparency_radar-# ORDER BY
+transparency_radar-#   (sr.cooldown_until_utc IS NOT NULL) DESC,
+transparency_radar-#   sr.last_error_type NULLS LAST,
+transparency_radar-#   m.name_sq;
+        name_sq        |                                                 vendime_url                                                 | last_error_type  |      cooldown_until_utc       |         last_seen_utc
+-----------------------+-------------------------------------------------------------------------------------------------------------+------------------+-------------------------------+-------------------------------
+ Fier                  | https://bashkiafier.gov.al/vendimet-e-kryesise-se-kb/                                                       | TLS_CERT_EXPIRED | 2026-02-21 02:29:21.156336+01 | 2026-02-11 01:21:22+01
+ Klos                  |                                                                                                             | BOT_CHALLENGE    |                               |
+ Dibër                 |                                                                                                             | INTERNAL_ERROR   |                               |
+ Mat                   |                                                                                                             | INTERNAL_ERROR   |                               |
+ Poliçan               |                                                                                                             | INTERNAL_ERROR   |                               |
+ Shkodër               |                                                                                                             | INTERNAL_ERROR   |                               |
+ Dimal (Ura Vajgurore) |                                                                                                             | NONE             |                               | 2026-02-11 01:08:07+01
+ Durrës                |                                                                                                             | NONE             |                               | 2026-02-11 01:08:07+01
+ Krujë                 |                                                                                                             | NONE             |                               | 2026-02-11 01:08:07+01
+ Kuçovë                |                                                                                                             | NONE             |                               | 2026-02-11 01:08:07+01
+ Shijak                |                                                                                                             | NONE             |                               | 2026-02-11 01:08:07+01
+ Vlorë                 |                                                                                                             | NONE             |                               | 2026-02-11 01:21:22+01
+ Belsh                 |                                                                                                             |                  |                               |
+ Berat                 | https://bashkiaberat.gov.al/projektvendimet/                                                                |                  |                               | 2026-02-14 02:29:39.006146+01
+ Bulqizë               | https://bulqiza.gov.al/projekt-vendime/                                                                     |                  |                               | 2026-02-14 02:29:39.46543+01
+ Cërrik                |                                                                                                             |                  |                               |
+ Delvinë               |                                                                                                             |                  |                               |
+ Devoll                |                                                                                                             |                  |                               |
+ Divjakë               |                                                                                                             |                  |                               |
+ Dropull               |                                                                                                             |                  |                               |
+ Elbasan               |                                                                                                             |                  |                               |
+ Finiq                 |                                                                                                             |                  |                               |
+ Fushë-Arrëz           |                                                                                                             |                  |                               |
+ Gjirokastër           |                                                                                                             |                  |                               |
+ Gramsh                |                                                                                                             |                  |                               |
+ Has                   |                                                                                                             |                  |                               |
+ Himarë                |                                                                                                             |                  |                               |
+ Kamëz                 | https://kamza.gov.al/category/vendimet/                                                                     |                  |                               | 2026-02-14 18:26:42.73576+01
+ Kavajë                | https://kavajajone.al/notice-category/vendime/                                                              |                  |                               | 2026-02-14 02:29:48.476408+01
+ Këlcyrë               |                                                                                                             |                  |                               |
+ Kolonjë               |                                                                                                             |                  |                               |
+ Konispol              |                                                                                                             |                  |                               |
+ Korçë                 | https://bashkiakorce.gov.al/category/keshilli-bashkiak-2/keshilli-keshilltaret/vendimmarrja/vendimet-aktet/ |                  |                               | 2026-02-14 02:29:49.890678+01
+ Kukës                 | https://kukesi.gov.al/keshilli-bashkiak/                                                                    |                  |                               | 2026-02-14 02:29:50.640571+01
+ Kurbin                |                                                                                                             |                  |                               |
+ Lezhë                 | https://lezha.gov.al/vendime-te-keshillit-bashkiak/                                                         |                  |                               | 2026-02-14 02:29:51.036268+01
+ Libohovë              |                                                                                                             |                  |                               |
+ Librazhd              |                                                                                                             |                  |                               |
+ Lushnjë               |                                                                                                             |                  |                               |
+ Malësi e Madhe        |                                                                                                             |                  |                               |
+ Maliq                 |                                                                                                             |                  |                               |
+ Mallakastër           |                                                                                                             |                  |                               |
+ Memaliaj              |                                                                                                             |                  |                               |
+ Mirditë               |                                                                                                             |                  |                               |
+ Patos                 |                                                                                                             |                  |                               |
+ Peqin                 |                                                                                                             |                  |                               |
+ Përmet                |                                                                                                             |                  |                               |
+ Pogradec              |                                                                                                             |                  |                               |
+ Prrenjas              |                                                                                                             |                  |                               |
+ Pukë                  |                                                                                                             |                  |                               |
+ Pustec                |                                                                                                             |                  |                               |
+ Roskovec              |                                                                                                             |                  |                               |
+ Rrogozhinë            |                                                                                                             |                  |                               |
+ Sarandë               | https://bashkiasarande.gov.al/projekt-vendime-te-keshillit-bashkiak/                                        |                  |                               | 2026-02-14 02:29:52.166325+01
+ Selenicë              |                                                                                                             |                  |                               |
+ Skrapar               | https://bashkiaskrapar.gov.al/category/keshilli/vendimet-e-keshillit-bashkiak/                              |                  |                               | 2026-02-14 02:29:57.519982+01
+ Tepelenë              |                                                                                                             |                  |                               |
+ Tiranë                | https://tirana.al/kategoria-e-publikimit/vendime-te-keshillit-bashkiak-{year}-4290                          |                  |                               | 2026-02-14 02:29:57.927434+01
+ Tropojë               |                                                                                                             |                  |                               |
+ Vau i Dejës           |                                                                                                             |                  |                               |
+ Vorë                  |                                                                                                             |                  |                               |
+(61 rows)

@@ -1,0 +1,103 @@
+PS C:\Users\user\Desktop\albania test\backend> Invoke-RestMethod -Method Post -Uri "http://localhost:5050/api/scrape/run?municipality=bulqize&category=Vendime&year=2026&limit=80"
+
+
+ok                  : True
+municipality        : bulqize
+municipality_id     : 0d1904d0-e06b-458f-a2e3-93267190c990
+category            : Vendime
+used_registry_id    : aecee75d-9a23-4999-8827-cfef59a634e1
+scraped_from        : https://bulqiza.gov.al/projekt-vendime/
+parsed_rows_total   : 80
+parsed_rows_kept    : 60
+inserted            : 0
+skipped             : 80
+skipped_missing_url : 0
+skipped_not_vendim  : 20
+sample_title        : Projekt-Vendim “Për përdorimin e fondit shtesë mbi fondin e kushtëzuar për ndihmën ekonomike ( deri në 6% ) për muajin Nentor 2025”.
+next                : Next: run the remaining checked municipalities and confirm parsed_rows_kept > 0.
+
+
+
+PS C:\Users\user\Desktop\albania test\backend> node .\index.js
+[dotenv@17.3.1] injecting env (2) from .env -- tip: 🤖 agentic secret storage: https://dotenvx.com/as2
+LOADED INDEX.JS FROM: C:\Users\user\Desktop\albania test\backend\index.js
+Server running on http://localhost:5050
+PS C:\Users\user\Desktop\albania test\backend> cd "$env:USERPROFILE\Desktop\albania test\backend"
+PS C:\Users\user\Desktop\albania test\backend> node .\scripts\run_all_vendime.js --year=2026 --limit=80 --concurrency=1
+[dotenv@17.3.1] injecting env (2) from .env -- tip: ⚡️ secrets for agents: https://dotenvx.com/as2
+
+Batch Vendime runner
+- API base: http://localhost:5050
+- Year: 2026  Limit: 80
+- Concurrency: 1
+- Total municipalities: 61
+- Runnable: 10  Skipped: 51
+
+Summary:
+┌─────────┬─────────────────────────┬───────────────────────────┬──────┬──────────┬─────────┬──────────────────────┐
+│ (index) │ municipality            │ status                    │ kept │ inserted │ skipped │ err                  │
+├─────────┼─────────────────────────┼───────────────────────────┼──────┼──────────┼─────────┼──────────────────────┤
+│ 0       │ 'Belsh'                 │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 1       │ 'Berat'                 │ 'OK'                      │ 64   │ 0        │ 68      │ ''                   │
+│ 2       │ 'Bulqizë'               │ 'OK'                      │ 60   │ 0        │ 80      │ ''                   │
+│ 3       │ 'Cërrik'                │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 4       │ 'Delvinë'               │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 5       │ 'Devoll'                │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 6       │ 'Dibër'                 │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 7       │ 'Dimal (Ura Vajgurore)' │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 8       │ 'Divjakë'               │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 9       │ 'Dropull'               │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 10      │ 'Durrës'                │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 11      │ 'Elbasan'               │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 12      │ 'Fier'                  │ 'SKIP:cooldown'           │ null │ null     │ null    │ 'TLS_CERT_EXPIRED'   │
+│ 13      │ 'Finiq'                 │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 14      │ 'Fushë-Arrëz'           │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 15      │ 'Gjirokastër'           │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 16      │ 'Gramsh'                │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 17      │ 'Has'                   │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 18      │ 'Himarë'                │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 19      │ 'Kamëz'                 │ 'OK'                      │ 45   │ 0        │ 45      │ ''                   │
+│ 20      │ 'Kavajë'                │ 'OK'                      │ 0    │ 0        │ 3       │ ''                   │
+│ 21      │ 'Këlcyrë'               │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 22      │ 'Klos'                  │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 23      │ 'Kolonjë'               │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 24      │ 'Konispol'              │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 25      │ 'Korçë'                 │ 'OK'                      │ 37   │ 0        │ 38      │ ''                   │
+│ 26      │ 'Krujë'                 │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 27      │ 'Kuçovë'                │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 28      │ 'Kukës'                 │ 'OK'                      │ 11   │ 0        │ 80      │ ''                   │
+│ 29      │ 'Kurbin'                │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 30      │ 'Lezhë'                 │ 'OK'                      │ 0    │ 0        │ 2       │ ''                   │
+│ 31      │ 'Libohovë'              │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 32      │ 'Librazhd'              │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 33      │ 'Lushnjë'               │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 34      │ 'Malësi e Madhe'        │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 35      │ 'Maliq'                 │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 36      │ 'Mallakastër'           │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 37      │ 'Mat'                   │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 38      │ 'Memaliaj'              │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 39      │ 'Mirditë'               │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 40      │ 'Patos'                 │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 41      │ 'Peqin'                 │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 42      │ 'Përmet'                │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 43      │ 'Pogradec'              │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 44      │ 'Poliçan'               │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 45      │ 'Prrenjas'              │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 46      │ 'Pukë'                  │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 47      │ 'Pustec'                │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 48      │ 'Roskovec'              │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 49      │ 'Rrogozhinë'            │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 50      │ 'Sarandë'               │ 'OK'                      │ 44   │ 0        │ 80      │ ''                   │
+│ 51      │ 'Selenicë'              │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 52      │ 'Shijak'                │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 53      │ 'Shkodër'               │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 54      │ 'Skrapar'               │ 'OK'                      │ 1    │ 0        │ 1       │ ''                   │
+│ 55      │ 'Tepelenë'              │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 56      │ 'Tiranë'                │ 'OK'                      │ 8    │ 0        │ 11      │ ''                   │
+│ 57      │ 'Tropojë'               │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 58      │ 'Vau i Dejës'           │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 59      │ 'Vlorë'                 │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+│ 60      │ 'Vorë'                  │ 'SKIP:config_missing_url' │ null │ null     │ null    │ 'CONFIG_MISSING_URL' │
+└─────────┴─────────────────────────┴───────────────────────────┴──────┴──────────┴─────────┴──────────────────────┘
+
+Wrote log: C:\Users\user\Desktop\albania test\backend\logs\run_all_vendime_2026-02-14T19-19-03-523Z.csv

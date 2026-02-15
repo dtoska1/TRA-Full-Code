@@ -1,0 +1,145 @@
+transparency_radar=# SELECT m.name_sq,
+transparency_radar-#        COUNT(*) AS vendime_total,
+transparency_radar-#        COUNT(*) FILTER (WHERE i.published_date IS NULL) AS missing_dates
+transparency_radar-# FROM municipalities m
+transparency_radar-# JOIN items i ON i.municipality_id = m.id
+transparency_radar-# WHERE i.category='Vendime'
+transparency_radar-# GROUP BY m.name_sq
+transparency_radar-# ORDER BY missing_dates DESC, vendime_total DESC;
+ name_sq | vendime_total | missing_dates
+---------+---------------+---------------
+ Sarandë |            80 |            80
+ Bulqizë |            80 |            80
+ Berat   |            62 |            62
+ Korçë   |            37 |            37
+ Kamëz   |            46 |            31
+ Kukës   |            31 |            31
+ Kavajë  |             3 |             3
+ Lezhë   |             2 |             2
+ Skrapar |             1 |             1
+ Tiranë  |            11 |             0
+(10 rows)
+
+transparency_radar=# SELECT m.id, m.name_sq
+transparency_radar-# FROM municipalities m
+transparency_radar-# JOIN source_registry sr ON sr.municipality_id=m.id
+transparency_radar-# WHERE sr.is_primary=TRUE
+transparency_radar-#   AND (sr.vendime_url IS NULL OR btrim(sr.vendime_url) = '')
+transparency_radar-# ORDER BY m.name_sq;
+                  id                  |        name_sq
+--------------------------------------+-----------------------
+ 3bc313fc-6343-40c3-9fb6-a95504e75ba3 | Belsh
+ cdfb7486-7e5d-4adc-bbbf-83797877f5c2 | Cërrik
+ cb780f08-08bd-468d-a2fc-1c0e0d7c1415 | Delvinë
+ 143c2ee4-e5ca-4fbb-b149-2fd3e5e115ba | Devoll
+ caf6fa28-f07d-4ce3-a8f4-13727bc6b544 | Dibër
+ 3fd13c6a-265a-43b3-bc21-db0561b48989 | Dimal (Ura Vajgurore)
+ d185b6c3-29fe-4c7f-bd03-0c541988e499 | Divjakë
+ 5cda92a7-057a-4abd-bf55-1c3dcdc0138a | Dropull
+ 3d8f9a9d-5be9-423b-b398-9b92a864a5ae | Durrës
+ d5646fd9-3dfe-426f-8be8-ae20d4aecf5a | Elbasan
+ 44b196da-e144-40bc-a065-04496bc72257 | Finiq
+ bc0b1386-28cb-457d-b188-3d1bd0661f12 | Fushë-Arrëz
+ a49e7194-535e-4c6c-a0f1-ad25b833002c | Gjirokastër
+ bfb35b70-834c-4a79-b098-a18ff6a356ee | Gramsh
+ 5e9b8877-2f02-4162-ba8d-8e0529ba8434 | Has
+ f2f899b1-4777-4e9e-8b07-b250908c1ec2 | Himarë
+ 5a6abe8b-4d16-47b7-ac2e-2bb808c8b185 | Këlcyrë
+ 1da9ad80-ca3d-41e8-86ce-281ca5ec41f0 | Klos
+ b38fa5f4-0b65-4750-af08-11ac93ca4e06 | Kolonjë
+ 9cf32c38-1d0d-4bd3-b310-9a36c564b665 | Konispol
+ 1b76ca1a-83b9-48ea-b15c-40b46216cc0f | Krujë
+ 0e9c2dd0-8d2c-443f-a554-d90f895c0bdd | Kuçovë
+ 7d68a723-be04-4296-9c17-9fef8e8aefd4 | Kurbin
+ 3169f5f9-ce5b-4c98-8d75-45b33f995650 | Libohovë
+ b1117c0a-fe18-4208-962c-880073359282 | Librazhd
+ ce7fa97e-b153-4eb3-9058-9bad6d91d5a3 | Lushnjë
+ 1427791b-52bb-4cb9-a1f5-a1af69993f10 | Malësi e Madhe
+ c8f7caab-14cb-4515-8f16-07b6f912c542 | Maliq
+ e50c26e5-1e5a-451a-94a7-63b76a4fd138 | Mallakastër
+ f5054440-24c0-4c9f-af22-385cf8c29647 | Mat
+ 11003361-efc0-4982-b538-1b0ddcfef889 | Memaliaj
+ 30eb928e-7f61-4998-ad41-dc35e67da4c9 | Mirditë
+ 1a2ff5be-1bb9-4e2b-a6a4-faf66d7609ce | Patos
+ 06978864-6bd4-4d1b-9eae-b24601d9c6b5 | Peqin
+ 982de4df-86c1-4ea7-be3c-47f15fbb4219 | Përmet
+ 555b69d6-eea2-47cf-93db-9be90d918a76 | Pogradec
+ 2deaa1a0-288d-44c3-8e3e-687213d2bb81 | Poliçan
+ 4c4f1719-1478-47c7-a66c-367d3efd06f6 | Prrenjas
+ 61f3f61a-fd04-451f-a1fd-2d07af4830e1 | Pukë
+ ded00c75-6439-4935-9974-44f0cd84dada | Pustec
+ aa486bcb-814a-4198-84fb-27a2b7f30a6a | Roskovec
+ 25cfe382-d171-4840-bf52-f58d59810511 | Rrogozhinë
+ 824e133f-1399-4214-a1a0-dff94853e826 | Selenicë
+ 20911b7e-f4c1-4e82-a145-e48864c17835 | Shijak
+ 0a8a1fcf-cd10-4e53-b5b2-2dced79ec93c | Shkodër
+ ba67800f-fc51-4d4b-b86f-5ae6fcb95210 | Tepelenë
+ b2fbe4d4-f873-4766-a8e8-d70a3f8f8630 | Tropojë
+ f2cbad9e-047c-48f4-91cf-e7c4cd116701 | Vau i Dejës
+ e3f57568-7eea-46ed-95bf-486c8e47ae0a | Vlorë
+ d244a459-3d50-4f7a-9ff9-7769a93fb50d | Vorë
+(50 rows)
+
+transparency_radar=# SELECT m.name_sq, sr.vendime_url, sr.last_error_type
+transparency_radar-# FROM source_registry sr
+transparency_radar-# JOIN municipalities m ON m.id=sr.municipality_id
+transparency_radar-# WHERE sr.is_primary=TRUE
+transparency_radar-#   AND (
+transparency_radar(#     sr.last_error_type IS NOT NULL
+transparency_radar(#     OR sr.vendime_url IS NULL OR btrim(sr.vendime_url)=''
+transparency_radar(#   )
+transparency_radar-# ORDER BY m.name_sq;
+        name_sq        |                      vendime_url                      | last_error_type
+-----------------------+-------------------------------------------------------+------------------
+ Belsh                 |                                                       |
+ Cërrik                |                                                       |
+ Delvinë               |                                                       |
+ Devoll                |                                                       |
+ Dibër                 |                                                       | INTERNAL_ERROR
+ Dimal (Ura Vajgurore) |                                                       | NONE
+ Divjakë               |                                                       |
+ Dropull               |                                                       |
+ Durrës                |                                                       | NONE
+ Elbasan               |                                                       |
+ Fier                  | https://bashkiafier.gov.al/vendimet-e-kryesise-se-kb/ | TLS_CERT_EXPIRED
+ Finiq                 |                                                       |
+ Fushë-Arrëz           |                                                       |
+ Gjirokastër           |                                                       |
+ Gramsh                |                                                       |
+ Has                   |                                                       |
+ Himarë                |                                                       |
+ Këlcyrë               |                                                       |
+ Klos                  |                                                       | BOT_CHALLENGE
+ Kolonjë               |                                                       |
+ Konispol              |                                                       |
+ Krujë                 |                                                       | NONE
+ Kuçovë                |                                                       | NONE
+ Kurbin                |                                                       |
+ Libohovë              |                                                       |
+ Librazhd              |                                                       |
+ Lushnjë               |                                                       |
+ Malësi e Madhe        |                                                       |
+ Maliq                 |                                                       |
+ Mallakastër           |                                                       |
+ Mat                   |                                                       | INTERNAL_ERROR
+ Memaliaj              |                                                       |
+ Mirditë               |                                                       |
+ Patos                 |                                                       |
+ Peqin                 |                                                       |
+ Përmet                |                                                       |
+ Pogradec              |                                                       |
+ Poliçan               |                                                       | INTERNAL_ERROR
+ Prrenjas              |                                                       |
+ Pukë                  |                                                       |
+ Pustec                |                                                       |
+ Roskovec              |                                                       |
+ Rrogozhinë            |                                                       |
+ Selenicë              |                                                       |
+ Shijak                |                                                       | NONE
+ Shkodër               |                                                       | INTERNAL_ERROR
+ Tepelenë              |                                                       |
+ Tropojë               |                                                       |
+ Vau i Dejës           |                                                       |
+ Vlorë                 |                                                       | NONE
+ Vorë                  |                                                       |
+(51 rows)

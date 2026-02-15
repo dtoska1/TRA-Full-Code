@@ -1,0 +1,85 @@
+PS C:\Users\user\Desktop\albania test\backend> node .\index.js
+[dotenv@17.3.1] injecting env (2) from .env -- tip: 🔐 prevent committing .env to code: https://dotenvx.com/precommit
+LOADED INDEX.JS FROM: C:\Users\user\Desktop\albania test\backend\index.js
+Server running on http://localhost:5050
+PS C:\Users\user\Desktop\albania test\backend> Invoke-RestMethod -Method Post -Uri "http://localhost:5050/api/scrape/run?municipality=shkoder&category=Vendime&year=2026&limit=80"
+
+
+ok                  : True
+municipality        : shkoder
+municipality_id     : 0a8a1fcf-cd10-4e53-b5b2-2dced79ec93c
+category            : Vendime
+used_registry_id    : 2235553b-f680-49c6-a311-9b9081d5a06a
+scraped_from        : https://bashkiashkoder.gov.al/vendimet-e-keshillit-bashkiak-2/
+parsed_rows_total   : 0
+parsed_rows_kept    : 0
+inserted            : 0
+skipped             : 0
+skipped_missing_url : 0
+skipped_not_vendim  : 0
+sample_title        :
+next                : Next: run the remaining checked municipalities and confirm parsed_rows_kept > 0.
+
+
+
+PS C:\Users\user\Desktop\albania test\backend> Invoke-RestMethod -Method Post -Uri "http://localhost:5050/api/scrape/run?municipality=vlore&category=Vendime&year=2026&limit=80"
+
+
+ok                  : True
+municipality        : vlore
+municipality_id     : e3f57568-7eea-46ed-95bf-486c8e47ae0a
+category            : Vendime
+used_registry_id    : 25deca03-c1c5-4ac2-b893-3c3a9e669d6a
+scraped_from        : https://vlora.gov.al/transparenca/vendimet-e-keshillit/
+parsed_rows_total   : 3
+parsed_rows_kept    : 3
+inserted            : 3
+skipped             : 0
+skipped_missing_url : 0
+skipped_not_vendim  : 0
+sample_title        : Rezultati i zgjedhjeve
+next                : Next: run the remaining checked municipalities and confirm parsed_rows_kept > 0.
+
+
+
+PS C:\Users\user\Desktop\albania test\backend> Invoke-RestMethod -Method Post -Uri "http://localhost:5050/api/scrape/run?municipality=lezhe&category=Vendime&year=2026&limit=80"
+
+
+ok                  : True
+municipality        : lezhe
+municipality_id     : 5e792d47-0d23-467b-abcf-fd9540667e4a
+category            : Vendime
+used_registry_id    : f82d659c-9220-478f-b449-8e165261d839
+scraped_from        : https://lezha.gov.al/vendime-te-keshillit-bashkiak/
+parsed_rows_total   : 2
+parsed_rows_kept    : 2
+inserted            : 0
+skipped             : 2
+skipped_missing_url : 0
+skipped_not_vendim  : 0
+sample_title        : Harta Turistike
+next                : Next: run the remaining checked municipalities and confirm parsed_rows_kept > 0.
+
+
+
+PS C:\Users\user\Desktop\albania test\backend> Invoke-RestMethod -Method Post -Uri "http://localhost:5050/api/scrape/run?municipality=kavaje&category=Vendime&year=2026&limit=80"
+
+
+ok                  : True
+municipality        : kavaje
+municipality_id     : 884aa795-51e6-45fc-8d14-8e1f114d7eab
+category            : Vendime
+used_registry_id    : 4cf31d44-ed79-4add-b1c7-8f5bf06a4829
+scraped_from        : https://kavajajone.al/notice-category/vendime/
+parsed_rows_total   : 3
+parsed_rows_kept    : 2
+inserted            : 0
+skipped             : 3
+skipped_missing_url : 0
+skipped_not_vendim  : 1
+sample_title        : FullBKavaje
+next                : Next: run the remaining checked municipalities and confirm parsed_rows_kept > 0.
+
+
+
+PS C:\Users\user\Desktop\albania test\backend>

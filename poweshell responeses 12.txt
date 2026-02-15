@@ -1,0 +1,42 @@
+PS C:\Users\user> Invoke-RestMethod -Method Post -Uri "http://localhost:5050/api/scrape/run?municipality=sarande&category=Vendime&year=2025&limit=30"
+
+
+ok                  : True
+municipality        : sarande
+municipality_id     : f1ccb579-b83e-4776-9359-09c9224a5af3
+category            : Vendime
+used_registry_id    : 8437e6d1-73ae-4b2c-8854-b3c1ed44527b
+scraped_from        : https://bashkiasarande.gov.al/projekt-vendime-te-keshillit-bashkiak/
+parsed_rows_total   : 30
+parsed_rows_kept    : 6
+inserted            : 0
+skipped             : 30
+skipped_missing_url : 0
+skipped_not_vendim  : 24
+sample_title        : Programi i Bashkisë Sarandë
+next                : Next: run the remaining checked municipalities and confirm parsed_rows_kept > 0.
+
+
+
+PS C:\Users\user> Invoke-RestMethod -Method Post -Uri "http://localhost:5050/api/scrape/run?municipality=kamze&category=Vendime&year=2025&limit=30"
+Invoke-RestMethod : {"ok":false,"error":"bad_request","message":"Provide municipality (name_key/name_sq) or municipality_id"}
+At line:1 char:1
++ Invoke-RestMethod -Method Post -Uri "http://localhost:5050/api/scrape ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : InvalidOperation: (System.Net.HttpWebRequest:HttpWebRequest) [Invoke-RestMethod], WebException
+    + FullyQualifiedErrorId : WebCmdletWebResponseException,Microsoft.PowerShell.Commands.InvokeRestMethodCommand
+PS C:\Users\user> Invoke-RestMethod -Method Post -Uri "http://localhost:5050/api/scrape/run?municipality=kamze&category=Vendime&year=2025&limit=30"
+Invoke-RestMethod : {"ok":false,"error":"bad_request","message":"Provide municipality (name_key/name_sq) or municipality_id"}
+At line:1 char:1
++ Invoke-RestMethod -Method Post -Uri "http://localhost:5050/api/scrape ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : InvalidOperation: (System.Net.HttpWebRequest:HttpWebRequest) [Invoke-RestMethod], WebException
+    + FullyQualifiedErrorId : WebCmdletWebResponseException,Microsoft.PowerShell.Commands.InvokeRestMethodCommand
+PS C:\Users\user> Invoke-RestMethod -Method Post -Uri "http://localhost:5050/api/scrape/run?municipality=durres&category=Vendime&year=2026&limit=10"
+Invoke-RestMethod : {"ok":false,"error":"missing_target_url","message":"vendime_url is NULL in source_registry (and no fallback available)","last_error_type":"CONFIG_MISSING_URL"}
+At line:1 char:1
++ Invoke-RestMethod -Method Post -Uri "http://localhost:5050/api/scrape ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : InvalidOperation: (System.Net.HttpWebRequest:HttpWebRequest) [Invoke-RestMethod], WebException
+    + FullyQualifiedErrorId : WebCmdletWebResponseException,Microsoft.PowerShell.Commands.InvokeRestMethodCommand
+PS C:\Users\user>
