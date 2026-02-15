@@ -1,0 +1,36 @@
+version: '3.8'
+services:
+  postgres:
+    image: postgres:16
+    container_name: tra_postgres
+    environment:
+      POSTGRES_DB: tra
+      POSTGRES_USER: tra
+      POSTGRES_PASSWORD: tra_password_change_me
+    ports:
+      - "5432:5432"
+    volumes:
+      - tra_pg_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    container_name: tra_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - tra_redis_data:/data
+
+  meili:
+    image: getmeili/meilisearch:v1.7
+    container_name: tra_meili
+    environment:
+      MEILI_MASTER_KEY: change_me_master_key
+    ports:
+      - "7700:7700"
+    volumes:
+      - tra_meili_data:/meili_data
+
+volumes:
+  tra_pg_data:
+  tra_redis_data:
+  tra_meili_data:
