@@ -21,3 +21,8 @@ yarn-error.log*
 # Playwright / tests
 playwright-report/
 test-results/
+
+# local junk
+/tatus
+*.tmp
+*.log
