@@ -102,6 +102,26 @@ docker start tra_postgres
 
 Expected while Postgres is stopped: HTTP `503` and payload including `db: "error"` plus `errors.db` with the connection/timeout reason.
 
+### 7) Verify public read API (v1 website feed)
+
+List municipalities (should return `total: 61` and 61 items):
+
+```powershell
+curl.exe http://localhost:5050/api/municipalities
+```
+
+Feed page shape (`ok`, `page`, `limit`, `total`, `items`):
+
+```powershell
+curl.exe "http://localhost:5050/api/feed?page=1&limit=5"
+```
+
+Feed filtered by municipality key (example: `tirana`):
+
+```powershell
+curl.exe "http://localhost:5050/api/feed?municipality=tirane&limit=5"
+```
+
 ## Next “must do” items for a public-ready v1
 
 - Make ingestion robust across municipalities (Playwright-first, retries, cooldowns).
