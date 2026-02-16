@@ -1,0 +1,79 @@
+# TORs (from TORs.docx)
+
+- TERMS OF REFERENCE
+- Software Developer
+- Project Title: Civic Data Lab Albania: Strengthening Transparency and Digital Participation Through a National Municipal Information Platform
+- Contract Type: Short-term consultancy
+- 1. Background
+- The Center for the Study of Democracy and Governance (CSDG) is implementing the Civic Data Lab Albania project under the Digital Spark Call, aiming to strengthen digital democracy and civic participation by enhancing the digital advocacy and institutional capacity of civil society organizations.
+- As part of the project’s digital component, CSDG will develop or improve a digital solution (platform/module/tool) to support ethical digital advocacy, learning, and civic engagement. A Software Developer will be engaged to design, develop, and technically implement this solution.
+- 2. Objectives of the Assignment
+- The Software Developer will:
+- develop a secure, functional, and user-friendly digital solution that supports civic participation and advocacy;
+- ensure ethical, privacy-compliant, and sustainable use of digital technologies;
+- support CSDG’s role as a Local Capacity Hub by enabling digital collaboration and learning.
+- 3. Scope of Work
+- The consultant will be responsible for:
+- Technical Design
+- review project requirements and user needs;
+- propose an appropriate technical architecture and technology stack.
+- Development & Implementation
+- develop or customize the agreed digital tool/platform/module;
+- ensure responsiveness, accessibility, and basic security standards;
+- integrate content and features as defined by CSDG.
+- Testing & Quality Assurance
+- conduct functionality and usability testing;
+- fix bugs and optimize performance.
+- Documentation & Handover
+- provide basic technical documentation;
+- support knowledge transfer to CSDG staff.
+- 4. Deliverables
+- Functional digital product/module aligned with project objectives
+- Source code and technical documentation
+- Final handover and demonstration session
+- 5. Reporting & Coordination
+- The Software Developer will work under the supervision of the Project Coordinator and collaborate closely with the UX/UI Designer.
+- 6. Required Qualifications
+- Proven experience in software or web application development
+- Experience with open-source or civic tech solutions is an asset
+- Understanding of data protection, security, and ethical digital practices
+- Ability to deliver within short timelines
+- 7. Ethical Standards
+- The consultant must comply with data protection regulations and ethical standards, ensuring responsible use of digital technologies and protection of users’ data.
+- TERMS OF REFERENCE
+- UX/UI Designer
+- Project Title: Civic Data Lab Albania: Strengthening Transparency and Digital Participation Through a National Municipal Information Platform
+- 1. Background
+- Under the Civic Data Lab Albania project, CSDG seeks to strengthen digital democracy and civic participation by developing inclusive, accessible, and user-friendly digital tools for civil society actors. To ensure usability and inclusion, a UX/UI Designer will be engaged to design user-centered interfaces aligned with ethical and inclusive digital practices.
+- 2. Objectives of the Assignment
+- The UX/UI Designer will:
+- ensure the digital solution is intuitive, accessible, and inclusive;
+- improve user engagement and participation in digital civic spaces;
+- support ethical and user-centered digital advocacy.
+- 3. Scope of Work
+- The consultant will be responsible for:
+- User Research & Design Concept
+- identify user needs in collaboration with CSDG;
+- define user journeys and information architecture.
+- UX/UI Design
+- design wireframes, prototypes, and visual interfaces;
+- apply accessibility and inclusion principles (clarity, readability, usability).
+- Usability Testing
+- test designs with users or project team;
+- refine designs based on feedback.
+- Design Handover
+- deliver final design assets and guidelines to the Software Developer;
+- support implementation alignment.
+- 4. Deliverables
+- Wireframes and prototypes
+- Final UI designs (desktop/mobile)
+- Design assets and brief usability guidelines
+- 5. Reporting & Coordination
+- The UX/UI Designer will report to the Project Coordinator and work closely with the Software Developer.
+- 6. Required Qualifications
+- Proven experience in UX/UI design for digital platforms
+- Experience designing for civil society, civic tech, or advocacy projects is an asset
+- Strong understanding of accessibility and inclusive design
+- Ability to translate complex content into clear user experiences
+- 7. Ethical Standards
+- The consultant must ensure inclusive, ethical, and responsible design practices, particularly regarding accessibility, privacy, and protection of vulnerable users.
