@@ -1,119 +1,131 @@
+# Repository Agent Rules (Codex / AI Assistants)
 
-# Transparency Radar Albania — Codex Operating Guide (AGENTS.md)
+This file is the **source of truth** for how Codex (and any AI assistants) should work in this repo.
 
-This repo is a monorepo-style project for **Transparency Radar Albania**: scrapers + API + database + public site to collect and publish municipal transparency documents across **all 61 Albanian municipalities**.
+## Core rules
 
-Codex (and any other agent) should read this file first.
-
----
-
-## 1) North-star goal
-
-Ship a **public-ready v1** that is:
-
-- **Mobile-first, SEO-first**, “news website” style.
-- Covers **all 61 municipalities end-to-end** (scrape → store → search → public feed).
-- So “launch” is basically **buy domain + DNS** (minimal tweaks).
+- Prefer **small, reviewable diffs** over big refactors.
+- Keep changes **testable** (add a quick verification step for every change).
+- **Never commit secrets** (no real API keys, passwords, tokens, `.env`, etc).
+  - Commit only `.env.example` templates with placeholders.
+  - Real secrets live only in local untracked `.env` files and/or Codex Environment Secrets.
+- Avoid destructive commands (force-deletes, history rewrites, DB drops). If a destructive action is required, **flag it clearly**.
+- Keep `main` **stable and shippable**.
 
 ---
 
-## 2) Target architecture (best-possible stack)
+# Transparency Radar Albania — Project Context (Read Me First)
 
-**Public site (v1):**
+## 1) What we’re building
 
-- Next.js (TypeScript) + Tailwind
-- SEO pages: municipality pages, category pages, item detail pages, RSS, sitemap
+A national “Transparency Radar Albania” platform that consolidates:
 
-**Backend (API):**
+- Municipal decisions (**Vendime**)
+- Procurement notices (**Prokurime**)
+- Public consultations (**Konsultime**)
 
-- Source of truth: PostgreSQL
-- Near-term: existing Node/Express code may exist
-- Target: migrate to NestJS (TypeScript) when the v1 is stable
+…into one **news-website style**, **mobile-first**, **SEO-first** public experience covering **all 61 municipalities** end-to-end.
 
-**Search + caching:**
+## 2) Repo & workflow (“insider mode”)
 
-- Meilisearch for fast, high-quality search UX
-- Redis for caching, queues, and rate limits
+- GitHub owner: `dtoska1`
+- Repo: `Transparency Radar Albania` (slug `Transparency-Radar-Albania`)
+- Branches:
+  - `main` = stable
+  - `codex-code-changes` = working branch for Codex proposals
 
-**Scraping:**
+Workflow:
 
-- Playwright-first for robustness
-- Cheerio/HTTP fallback for speed where possible
-- Store PDFs/snapshots into S3-compatible object storage (Cloudflare R2 / AWS S3 / Backblaze B2)
+1. Codex proposes changes on `codex-code-changes`.
+2. Dion reviews locally in VS Code.
+3. Merge into `main` only when validated.
 
-**Ops:**
+## 3) Canonical stack (target)
 
-- Docker + Docker Compose for reproducible local/prod
+- Public site: Next.js (TypeScript) + Tailwind (SEO-first)
+- Backend: current Node/Express (`/backend`), target NestJS (TypeScript)
+- DB: PostgreSQL (source of truth)
+- Search: Meilisearch
+- Cache/queues/rate limit: Redis
+- Scraping: Playwright-first; Cheerio/HTTP fallback
+- Storage: S3-compatible (R2/S3/B2) for PDFs/snapshots
 - Monitoring: Sentry + uptime/metrics
+- Containers: Docker + Docker Compose
 
----
+## 4) Local infrastructure (Windows + Docker Desktop)
 
-## 3) Working rules (IMPORTANT)
+This repo uses Docker Compose for local-only dependencies (bound to **127.0.0.1**):
 
-### Safety / security
+- Postgres: `tra_postgres`
+  - Host: `localhost`
+  - Host port: **5433** (container 5432)
+  - DB: `tra`, user: `tra`, password: set by compose
+- Redis: `tra_redis` on `localhost:6379`
+- Meilisearch: `tra_meili` on `localhost:7700`
 
-- **NEVER commit secrets** (.env, tokens, API keys, passwords).
-- Keep `.env` ignored; keep `.env.example` committed with **blank values** only.
-- Any credentials belong in:
-  - local untracked `.env`, and/or
-  - Codex “Environment → Secrets” (for agent runs).
+> Postgres is mapped to **5433** because Windows is already using 5432 on this machine.
+> If you change the port mapping, update `DATABASE_URL` accordingly.
 
-### Change discipline
+Start:
 
-- Keep changes **small and reviewable**.
-- Explain what changed and why.
-- Ask before destructive operations:
-  - force-deletes, history rewrites, dropping DBs, nuking volumes, etc.
+- `docker compose up -d`
+- `docker ps` should show: `tra_postgres`, `tra_redis`, `tra_meili`
 
-### Data invariants (do not break)
+## 5) Backend (host-run)
 
-If/when `source_registry` exists, preserve:
+Backend lives in `/backend` and uses dotenv when run from the backend folder.
 
-- `attempt_count` never decreases
-- `hour_buckets_seen` append-only
-- `first_seen_utc` write-once
-- avoid duplicate items by stable dedupe rules
+- Local env file: `backend/.env` (**untracked**)
+- Template: `backend/.env.example` (**committed**)
 
----
+Minimum env vars:
 
-## 4) Repo & workflow expectations
+- `PORT=5050`
+- `DATABASE_URL=postgres://tra:__SET_ME__@localhost:5433/tra`
+- `REDIS_URL=redis://localhost:6379`
+- `MEILI_HOST=http://localhost:7700`
+- `MEILI_MASTER_KEY=__SET_ME__`
 
-### Branching
+Run:
 
-- Prefer feature work in `codex-code-changes` (or a short-lived feature branch).
-- Merge into `main` via PR when stable.
+- `cd backend`
+- `npm i`
+- `npm run dev`
 
-### Local dev (typical)
+Health:
 
-1. Start infra:
-   - `docker compose up -d`
-2. Apply SQL scripts (PowerShell-friendly):
-   - `Get-Content .\001_init.sql | docker exec -i tra_postgres psql -U tra -d tra`
-   - `Get-Content .\002_hardening.sql | docker exec -i tra_postgres psql -U tra -d tra`
-   - `Get-Content .\003_views_and_keys.sql | docker exec -i tra_postgres psql -U tra -d tra`
-   - (optional) `Get-Content .\004_name_key_trigger.sql | docker exec -i tra_postgres psql -U tra -d tra`
-3. Run backend:
-   - from `backend/`: `npm install` then `npm run dev` (or `npm start`)
+- `http://localhost:5050/health`
 
-> NOTE: If `municipalities.name_key` is NOT NULL and auto-generated, ensure a trigger/function exists (see `004_name_key_trigger.sql` pattern).
+## 6) Database bootstrap & seeding
 
----
+DB scripts live at repo root:
 
-## 5) “Must-have” product behavior
+- `001_init.sql`
+- `002_hardening.sql`
+- `003_views_and_keys.sql`
+- `004_name_key_trigger.sql` (auto-generates `municipalities.name_key`)
+- `005_seed_municipalities.sql` (must insert **exactly 61** municipalities)
 
-- A public feed view exists (e.g., `v_public_feed`) that powers the homepage.
-- Municipality list is canonical and should end at **61 rows** in production.
-- Search works (Meilisearch) and stays in sync with DB.
-- Scrapers are robust, respectful (rate limits), and auditable (log source_url, snapshot refs, errors).
+PowerShell-safe, stop on error:
 
----
+- `Get-Content -Raw -Encoding UTF8 .\001_init.sql | docker exec -i tra_postgres psql -U tra -d tra -v ON_ERROR_STOP=1`
+- (repeat for 002/003/004/005)
 
-## 6) Files Codex should treat as truth
+Verification queries:
 
-If present, always use these as primary guidance:
+- `SELECT count(*) FROM municipalities;`  → must be `61`
+- `SELECT name_sq, county, name_key FROM municipalities ORDER BY name_sq LIMIT 10;`
 
-- `AGENTS.md` (this file)
-- `docs/TORs.md`
-- `docs/SUMMARY.md`
-- `README.md` (if/when added)
-- SQL migration scripts in repo root (001_*, 002_*, …)
+⚠️ Note about test data:
+
+- `schema_verification_check.sql` inserts “Bashkia Schema Test …” rows into `municipalities`.
+  - Run it only on a scratch DB, or expect municipality counts to exceed 61.
+
+## 7) What Codex should do by default
+
+When asked to implement something:
+
+1. Make the smallest safe change that moves the project forward.
+2. Update docs if behavior/steps changed (README + `docs/*`).
+3. Add a quick local verification step (SQL query, curl, or minimal script).
+4. Keep secrets out of commits.
