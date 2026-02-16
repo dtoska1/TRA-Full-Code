@@ -7,7 +7,7 @@ services:
       POSTGRES_USER: tra
       POSTGRES_PASSWORD: tra_password_change_me
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - tra_pg_data:/var/lib/postgresql/data
 
@@ -15,7 +15,7 @@ services:
     image: redis:7-alpine
     container_name: tra_redis
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - tra_redis_data:/data
 
@@ -25,7 +25,7 @@ services:
     environment:
       MEILI_MASTER_KEY: change_me_master_key
     ports:
-      - "7700:7700"
+      - "127.0.0.1:7700:7700"
     volumes:
       - tra_meili_data:/meili_data
 
