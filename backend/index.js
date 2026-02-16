@@ -7,6 +7,7 @@ const helmet = require("helmet");
 const morgan = require("morgan");
 const { Pool } = require("pg");
 const dns = require("dns");
+const net = require("net");
 
 // Make Node prefer IPv4 first (helps on some Windows setups)
 dns.setDefaultResultOrder("ipv4first");
@@ -44,6 +45,148 @@ const pool = new Pool({
 pool.on("connect", (client) => {
   client.query("SET client_encoding TO 'UTF8'").catch(() => {});
 });
+
+// Prevent process crashes if an idle pooled client loses DB connectivity.
+pool.on("error", (err) => {
+  console.error("Postgres pool error:", err.message);
+});
+
+function withTimeout(promise, timeoutMs, timeoutMessage) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs)
+    ),
+  ]);
+}
+
+async function checkDb() {
+  await withTimeout(
+    pool.query("SELECT 1"),
+    1500,
+    "DB check timed out after 1500ms"
+  );
+  return "ok";
+}
+
+async function checkRedisPing() {
+  const redisUrl = process.env.REDIS_URL;
+  if (!redisUrl) throw new Error("REDIS_URL is not set");
+
+  const parsed = new URL(redisUrl);
+  const host = parsed.hostname || "127.0.0.1";
+  const port = Number(parsed.port || 6379);
+  const password = decodeURIComponent(parsed.password || "");
+
+  return withTimeout(
+    new Promise((resolve, reject) => {
+      const socket = net.createConnection({ host, port });
+      let buffer = "";
+
+      const cleanup = () => {
+        socket.removeAllListeners();
+        socket.end();
+        socket.destroy();
+      };
+
+      const fail = (message) => {
+        cleanup();
+        reject(new Error(message));
+      };
+
+      socket.on("error", (err) => {
+        fail(`Redis ping failed: ${err.message}`);
+      });
+
+      socket.on("connect", () => {
+        const commands = [];
+        if (password) {
+          commands.push(`*2\r\n$4\r\nAUTH\r\n$${Buffer.byteLength(password)}\r\n${password}\r\n`);
+        }
+        commands.push("*1\r\n$4\r\nPING\r\n");
+        socket.write(commands.join(""));
+      });
+
+      socket.on("data", (chunk) => {
+        buffer += chunk.toString("utf8");
+
+        if (buffer.includes("-")) {
+          const line = buffer.split("\r\n")[0] || buffer.trim();
+          fail(`Redis ping failed: ${line}`);
+          return;
+        }
+
+        if (password) {
+          if (buffer.includes("+OK\r\n") && buffer.includes("+PONG\r\n")) {
+            cleanup();
+            resolve("ok");
+          }
+          return;
+        }
+
+        if (buffer.includes("+PONG\r\n")) {
+          cleanup();
+          resolve("ok");
+        }
+      });
+    }),
+    1500,
+    "Redis ping timed out after 1500ms"
+  );
+}
+
+async function checkMeiliHealth() {
+  const host = process.env.MEILI_HOST;
+  if (!host) throw new Error("MEILI_HOST is not set");
+
+  const headers = {};
+  if (process.env.MEILI_MASTER_KEY) {
+    headers.Authorization = `Bearer ${process.env.MEILI_MASTER_KEY}`;
+  }
+
+  const response = await withTimeout(
+    fetch(`${host.replace(/\/+$/, "")}/health`, { headers }),
+    1500,
+    "Meilisearch health check timed out after 1500ms"
+  );
+
+  if (!response.ok) {
+    throw new Error(`Meilisearch health returned HTTP ${response.status}`);
+  }
+
+  return "ok";
+}
+
+function formatCheckError(err, fallbackMessage) {
+  const message = String(err?.message || "").trim();
+  if (message) return message;
+
+  const code = String(err?.code || err?.cause?.code || "").trim();
+  if (code) return `${fallbackMessage} (${code})`;
+
+  return fallbackMessage;
+}
+
+let _vPublicFeedColumns = null;
+async function getVPublicFeedColumns() {
+  if (_vPublicFeedColumns) return _vPublicFeedColumns;
+  const r = await pool.query(
+    `
+    SELECT column_name
+    FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'v_public_feed'
+    `
+  );
+  _vPublicFeedColumns = new Set(r.rows.map((row) => row.column_name));
+  return _vPublicFeedColumns;
+}
+
+function parsePositiveInt(value, fallback) {
+  if (value === undefined || value === null || value === "") return fallback;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 1) return null;
+  return n;
+}
 
 // --------------------
 // Helpers
@@ -238,12 +381,46 @@ app.get("/", (req, res) => {
 });
 
 app.get("/health", async (req, res) => {
+  const status = {
+    ok: true,
+    db: "ok",
+    redis: "ok",
+    meili: "ok",
+  };
+  const errors = {};
+
   try {
-    const r = await pool.query("SELECT 1 AS ok");
-    res.json({ ok: true, db: r.rows[0].ok });
+    await checkDb();
   } catch (err) {
-    res.status(500).json({ ok: false, error: "db_error", message: err.message });
+    status.ok = false;
+    status.db = "error";
+    errors.db = formatCheckError(err, "Database check failed");
   }
+
+  try {
+    await checkRedisPing();
+  } catch (err) {
+    status.ok = false;
+    status.redis = "error";
+    errors.redis = formatCheckError(err, "Redis check failed");
+  }
+
+  try {
+    await checkMeiliHealth();
+  } catch (err) {
+    status.ok = false;
+    status.meili = "error";
+    errors.meili = formatCheckError(err, "Meilisearch check failed");
+  }
+
+  if (status.ok) {
+    return res.json(status);
+  }
+
+  return res.status(503).json({
+    ...status,
+    errors,
+  });
 });
 
 app.get("/api/debug/db-encoding", async (req, res) => {
@@ -258,9 +435,13 @@ app.get("/api/debug/db-encoding", async (req, res) => {
 app.get("/api/municipalities", async (req, res) => {
   try {
     const r = await pool.query(
-      `SELECT id, name_sq, name_key FROM municipalities ORDER BY name_sq`
+      `SELECT id, name_sq, name_key, county FROM municipalities ORDER BY name_sq ASC`
     );
-    res.json({ rows: r.rows });
+    res.json({
+      ok: true,
+      total: r.rowCount,
+      items: r.rows,
+    });
   } catch (err) {
     res.status(500).json({ ok: false, error: "db_error", message: err.message });
   }
@@ -269,52 +450,92 @@ app.get("/api/municipalities", async (req, res) => {
 // Public feed from v_public_feed (only published rows)
 app.get("/api/feed", async (req, res) => {
   try {
-    const { municipality, municipality_id, category, limit = 50, offset = 0 } = req.query;
+    const page = parsePositiveInt(req.query.page, 1);
+    if (page === null) {
+      return res.status(400).json({
+        ok: false,
+        error: "bad_request",
+        message: "Invalid page. page must be an integer >= 1.",
+      });
+    }
+
+    const limit = parsePositiveInt(req.query.limit, 20);
+    if (limit === null || limit > 100) {
+      return res.status(400).json({
+        ok: false,
+        error: "bad_request",
+        message: "Invalid limit. limit must be an integer between 1 and 100.",
+      });
+    }
+
+    const { municipality, q } = req.query;
+    const offset = (page - 1) * limit;
 
     const params = [];
     const where = [];
 
-    // Prefer municipality_id filtering. If a municipality name is provided,
-    // resolve it via name_key and then filter by municipality_id.
-    if (municipality_id) {
-      params.push(String(municipality_id));
-      where.push(`municipality_id = $${params.length}`);
-    } else if (municipality) {
-      const key = toNameKey(String(municipality));
-      const r = await pool.query(`SELECT id FROM municipalities WHERE name_key = $1 LIMIT 1`, [key]);
-      if (r.rowCount) {
-        params.push(String(r.rows[0].id));
-        where.push(`municipality_id = $${params.length}`);
-      } else {
-        // fallback: allow direct string match if view exposes municipality name (legacy)
-        params.push(String(municipality));
-        where.push(`municipality = $${params.length}`);
+    if (municipality) {
+      params.push(String(municipality).trim().toLowerCase());
+      where.push(`lower(municipality_key) = $${params.length}`);
+    }
+
+    if (q && String(q).trim()) {
+      const feedColumns = await getVPublicFeedColumns();
+      const qParam = `%${String(q).trim()}%`;
+      const textClauses = [];
+
+      if (feedColumns.has("title")) {
+        params.push(qParam);
+        textClauses.push(`title ILIKE $${params.length}`);
+      }
+      if (feedColumns.has("summary")) {
+        params.push(qParam);
+        textClauses.push(`summary ILIKE $${params.length}`);
+      }
+      if (textClauses.length > 0) {
+        where.push(`(${textClauses.join(" OR ")})`);
       }
     }
 
-    if (category) {
-      params.push(String(category));
-      where.push(`category = $${params.length}`);
-    }
-
-    const lim = Math.max(1, Math.min(200, Number(limit) || 50));
-    const off = Math.max(0, Number(offset) || 0);
-
-    params.push(lim);
-    const limitIdx = params.length;
-    params.push(off);
-    const offsetIdx = params.length;
-
-    const sql = `
-      SELECT *
+    const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+    const countSql = `
+      SELECT COUNT(*)::int AS total
       FROM v_public_feed
-      ${where.length ? "WHERE " + where.join(" AND ") : ""}
+      ${whereSql};
+    `;
+    const countResult = await pool.query(countSql, params);
+    const total = countResult.rows[0]?.total || 0;
+
+    const itemParams = [...params];
+    itemParams.push(limit);
+    const limitIdx = itemParams.length;
+    itemParams.push(offset);
+    const offsetIdx = itemParams.length;
+
+    const itemsSql = `
+      SELECT
+        id,
+        municipality AS municipality_name,
+        municipality_key AS municipality_name_key,
+        title,
+        source_url,
+        published_date AS published_at,
+        created_at,
+        collected_at
+      FROM v_public_feed
+      ${whereSql}
       ORDER BY collected_at DESC
       LIMIT $${limitIdx} OFFSET $${offsetIdx};
     `;
 
-    const r2 = await pool.query(sql, params);
-    res.json({ rows: r2.rows });
+    const itemsResult = await pool.query(itemsSql, itemParams);
+    res.json({
+      ok: true,
+      page,
+      limit,
+      total,
+      items: itemsResult.rows,
+    });
   } catch (err) {
     res.status(500).json({ ok: false, error: "server_error", message: err.message });
   }
