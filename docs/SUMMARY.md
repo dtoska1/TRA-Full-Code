@@ -1,0 +1,34 @@
+# Summary (from Summary.docx)
+
+- Summary
+- Main Objective
+- Develop and deploy a digital transparency platform that consolidates municipal decisions, procurement notices, and public consultation announcements into a single, accessible, mobile-friendly interface.
+- Description
+- The project will develop a lightweight, mobile-first digital platform designed to consolidate municipal decisions, procurement notices, and public consultation announcements into a single, accessible interface. The platform combines automated data collection, structured information processing, and user-friendly presentation to make public information understandable and actionable for citizens, journalists, and civil society organizations.
+- Technology Involved
+- The platform will use a combination of automated web-scraping modules, semi-automated extraction tools, and a manual upload interface to ensure full national coverage. Automated scripts will collect structured data from 5–8 municipalities with consistent publication formats, while semi-automated tools will support municipalities with partially structured data. A secure, browser-based upload interface will enable CSDG staff to input information from municipalities with irregular or inaccessible websites. The front-end will be built using responsive, open-source technologies optimized for mobile devices, ensuring fast loading and low data consumption. Hosting will include SSL encryption and regular security monitoring.
+- How the Technology Will Be Used
+- The platform will aggregate data into a centralized database, generate plain-language summaries, and display information through searchable lists, filters, and simple visualizations. Users will be able to track municipal decisions, monitor procurement processes, and identify open consultations. Accessibility features—including high-contrast mode, screen-reader compatibility, and low-bandwidth optimization—will ensure broad usability.
+- Project Activities and Timeline
+- The project will be implemented over six months and is structured into four interconnected components that ensure a smooth progression from preparation to development, public engagement, and regional learning.
+- Component 1: Project Initiation and Preparation
+- Contract and onboard the software developer and UX/UI designer (M1).
+- Finalize technical specifications, including platform architecture, data collection methods, and accessibility requirements.
+- Map data sources across all 61 municipalities to document formats, publication practices, and scraping feasibility.
+- Select the CSDG staff member who will participate in the regional fellowship.
+- Component 2: Platform Development
+- Develop core platform components: database, scraping modules, semi-automated extraction tools, and manual upload interface.
+- Implement automated scraping for 5–8 municipalities with structured websites.
+- Establish hybrid coverage processes (semi-automated + manual) to ensure national coverage.
+- Conduct internal testing, debugging, and refinement to improve accuracy and usability.
+- Integrate accessibility features, including high-contrast mode, screen-reader compatibility, and low-bandwidth optimization.
+- Component 3: Public Launch and Engagement
+- Launch Transparency Radar Albania publicly, accompanied by communication materials and user guidance.
+- Organize and deliver the Digital Democracy Learning Forum for CSOs, journalists, youth groups, and marginalized communities.
+- Implement a three-month national advocacy campaign promoting transparency, digital rights, and civic engagement through social media content, videos, infographics, and targeted outreach.
+- Component 4: Regional Learning and Consolidation
+- Host a one-month, in-person fellowship for a representative from a partner organization, integrating them into CSDG’s ongoing digital democracy work.
+- Co-develop a comparative brief or practical guide with the Fellow, capturing regional learning and best practices.
+- Integrate fellowship insights into platform improvements and future programming.
+- Conduct sustainability planning, including maintenance and expansion strategies for post-grant continuation.
+- Prepare final narrative, financial, and technical reports.
