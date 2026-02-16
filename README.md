@@ -78,6 +78,30 @@ Health check:
 
 - `http://localhost:5050/health`
 
+### 6) Verify health/readiness checks
+
+With backend running (`cd backend && npm run dev`), verify all dependencies:
+
+```bash
+curl http://localhost:5050/health
+```
+
+Expected (or equivalent explicit fields):
+
+```json
+{"ok":true,"db":"ok","redis":"ok","meili":"ok"}
+```
+
+Check DB failure behavior (clear error message):
+
+```bash
+docker stop tra_postgres
+curl http://localhost:5050/health
+docker start tra_postgres
+```
+
+Expected while Postgres is stopped: HTTP `503` and payload including `db: "error"` plus `errors.db` with the connection/timeout reason.
+
 ## Next “must do” items for a public-ready v1
 
 - Make ingestion robust across municipalities (Playwright-first, retries, cooldowns).

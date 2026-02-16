@@ -7,6 +7,7 @@ const helmet = require("helmet");
 const morgan = require("morgan");
 const { Pool } = require("pg");
 const dns = require("dns");
+const net = require("net");
 
 // Make Node prefer IPv4 first (helps on some Windows setups)
 dns.setDefaultResultOrder("ipv4first");
@@ -44,6 +45,127 @@ const pool = new Pool({
 pool.on("connect", (client) => {
   client.query("SET client_encoding TO 'UTF8'").catch(() => {});
 });
+
+// Prevent process crashes if an idle pooled client loses DB connectivity.
+pool.on("error", (err) => {
+  console.error("Postgres pool error:", err.message);
+});
+
+function withTimeout(promise, timeoutMs, timeoutMessage) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs)
+    ),
+  ]);
+}
+
+async function checkDb() {
+  await withTimeout(
+    pool.query("SELECT 1"),
+    1500,
+    "DB check timed out after 1500ms"
+  );
+  return "ok";
+}
+
+async function checkRedisPing() {
+  const redisUrl = process.env.REDIS_URL;
+  if (!redisUrl) throw new Error("REDIS_URL is not set");
+
+  const parsed = new URL(redisUrl);
+  const host = parsed.hostname || "127.0.0.1";
+  const port = Number(parsed.port || 6379);
+  const password = decodeURIComponent(parsed.password || "");
+
+  return withTimeout(
+    new Promise((resolve, reject) => {
+      const socket = net.createConnection({ host, port });
+      let buffer = "";
+
+      const cleanup = () => {
+        socket.removeAllListeners();
+        socket.end();
+        socket.destroy();
+      };
+
+      const fail = (message) => {
+        cleanup();
+        reject(new Error(message));
+      };
+
+      socket.on("error", (err) => {
+        fail(`Redis ping failed: ${err.message}`);
+      });
+
+      socket.on("connect", () => {
+        const commands = [];
+        if (password) {
+          commands.push(`*2\r\n$4\r\nAUTH\r\n$${Buffer.byteLength(password)}\r\n${password}\r\n`);
+        }
+        commands.push("*1\r\n$4\r\nPING\r\n");
+        socket.write(commands.join(""));
+      });
+
+      socket.on("data", (chunk) => {
+        buffer += chunk.toString("utf8");
+
+        if (buffer.includes("-")) {
+          const line = buffer.split("\r\n")[0] || buffer.trim();
+          fail(`Redis ping failed: ${line}`);
+          return;
+        }
+
+        if (password) {
+          if (buffer.includes("+OK\r\n") && buffer.includes("+PONG\r\n")) {
+            cleanup();
+            resolve("ok");
+          }
+          return;
+        }
+
+        if (buffer.includes("+PONG\r\n")) {
+          cleanup();
+          resolve("ok");
+        }
+      });
+    }),
+    1500,
+    "Redis ping timed out after 1500ms"
+  );
+}
+
+async function checkMeiliHealth() {
+  const host = process.env.MEILI_HOST;
+  if (!host) throw new Error("MEILI_HOST is not set");
+
+  const headers = {};
+  if (process.env.MEILI_MASTER_KEY) {
+    headers.Authorization = `Bearer ${process.env.MEILI_MASTER_KEY}`;
+  }
+
+  const response = await withTimeout(
+    fetch(`${host.replace(/\/+$/, "")}/health`, { headers }),
+    1500,
+    "Meilisearch health check timed out after 1500ms"
+  );
+
+  if (!response.ok) {
+    throw new Error(`Meilisearch health returned HTTP ${response.status}`);
+  }
+
+  return "ok";
+}
+
+function formatCheckError(err, fallbackMessage) {
+  const message = String(err?.message || "").trim();
+  if (message) return message;
+
+  const code = String(err?.code || err?.cause?.code || "").trim();
+  if (code) return `${fallbackMessage} (${code})`;
+
+  return fallbackMessage;
+}
 
 // --------------------
 // Helpers
@@ -238,12 +360,46 @@ app.get("/", (req, res) => {
 });
 
 app.get("/health", async (req, res) => {
+  const status = {
+    ok: true,
+    db: "ok",
+    redis: "ok",
+    meili: "ok",
+  };
+  const errors = {};
+
   try {
-    const r = await pool.query("SELECT 1 AS ok");
-    res.json({ ok: true, db: r.rows[0].ok });
+    await checkDb();
   } catch (err) {
-    res.status(500).json({ ok: false, error: "db_error", message: err.message });
+    status.ok = false;
+    status.db = "error";
+    errors.db = formatCheckError(err, "Database check failed");
   }
+
+  try {
+    await checkRedisPing();
+  } catch (err) {
+    status.ok = false;
+    status.redis = "error";
+    errors.redis = formatCheckError(err, "Redis check failed");
+  }
+
+  try {
+    await checkMeiliHealth();
+  } catch (err) {
+    status.ok = false;
+    status.meili = "error";
+    errors.meili = formatCheckError(err, "Meilisearch check failed");
+  }
+
+  if (status.ok) {
+    return res.json(status);
+  }
+
+  return res.status(503).json({
+    ...status,
+    errors,
+  });
 });
 
 app.get("/api/debug/db-encoding", async (req, res) => {
