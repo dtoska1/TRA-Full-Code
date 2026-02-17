@@ -5,6 +5,7 @@ const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
 const morgan = require("morgan");
+const rateLimit = require("express-rate-limit");
 const { Pool } = require("pg");
 const dns = require("dns");
 const net = require("net");
@@ -20,6 +21,11 @@ console.log("LOADED INDEX.JS FROM:", __filename);
 
 const app = express();
 
+// If deployed behind a reverse proxy/load balancer, set TRUST_PROXY=1.
+if (String(process.env.TRUST_PROXY || "") === "1") {
+  app.set("trust proxy", 1);
+}
+
 // --------------------
 // Middleware
 // --------------------
@@ -27,6 +33,19 @@ app.use(cors());
 app.use(helmet());
 app.use(express.json());
 app.use(morgan("dev"));
+
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: Number(process.env.API_RATE_LIMIT_MAX || 120),
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    error: "rate_limited",
+    message: "Too many requests, please try again later.",
+  },
+});
+app.use("/api", apiLimiter);
 
 // Always declare UTF-8 JSON (API responses)
 app.use((req, res, next) => {
@@ -39,11 +58,13 @@ app.use((req, res, next) => {
 // --------------------
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  options: "-c client_encoding=UTF8",
+  options: "-c client_encoding=UTF8 -c statement_timeout=3000",
 });
 
 pool.on("connect", (client) => {
-  client.query("SET client_encoding TO 'UTF8'").catch(() => {});
+  client
+    .query("SET client_encoding TO 'UTF8'; SET statement_timeout TO '3000ms'")
+    .catch(() => {});
 });
 
 // Prevent process crashes if an idle pooled client loses DB connectivity.
@@ -186,6 +207,25 @@ function parsePositiveInt(value, fallback) {
   const n = Number(value);
   if (!Number.isInteger(n) || n < 1) return null;
   return n;
+}
+
+function badRequest(res, message) {
+  return res.status(400).json({
+    ok: false,
+    error: "bad_request",
+    message,
+  });
+}
+
+function safePublicErrorMessage(err, fallbackMessage) {
+  const raw = String(err?.message || "").trim();
+  if (!raw) return fallbackMessage;
+
+  const redacted = raw
+    .replace(/postgres:\/\/[^@\s]+@/gi, "postgres://***@")
+    .replace(/password=[^\s]+/gi, "password=***");
+
+  return redacted.length > 200 ? fallbackMessage : redacted;
 }
 
 // --------------------
@@ -428,7 +468,11 @@ app.get("/api/debug/db-encoding", async (req, res) => {
     const r = await pool.query("SHOW client_encoding");
     res.json({ ok: true, client_encoding: r.rows[0].client_encoding });
   } catch (err) {
-    res.status(500).json({ ok: false, error: "db_error", message: err.message });
+    res.status(500).json({
+      ok: false,
+      error: "db_error",
+      message: safePublicErrorMessage(err, "Database operation failed"),
+    });
   }
 });
 
@@ -443,7 +487,11 @@ app.get("/api/municipalities", async (req, res) => {
       items: r.rows,
     });
   } catch (err) {
-    res.status(500).json({ ok: false, error: "db_error", message: err.message });
+    res.status(500).json({
+      ok: false,
+      error: "db_error",
+      message: safePublicErrorMessage(err, "Database operation failed"),
+    });
   }
 });
 
@@ -452,36 +500,51 @@ app.get("/api/feed", async (req, res) => {
   try {
     const page = parsePositiveInt(req.query.page, 1);
     if (page === null) {
-      return res.status(400).json({
-        ok: false,
-        error: "bad_request",
-        message: "Invalid page. page must be an integer >= 1.",
-      });
+      return badRequest(res, "Invalid page. page must be an integer >= 1.");
     }
 
     const limit = parsePositiveInt(req.query.limit, 20);
     if (limit === null || limit > 100) {
-      return res.status(400).json({
-        ok: false,
-        error: "bad_request",
-        message: "Invalid limit. limit must be an integer between 1 and 100.",
-      });
+      return badRequest(res, "Invalid limit. limit must be an integer between 1 and 100.");
     }
 
-    const { municipality, q } = req.query;
+    const municipalityRaw = req.query.municipality;
+    let municipality = null;
+    if (municipalityRaw !== undefined) {
+      municipality = String(municipalityRaw).trim().toLowerCase();
+      if (!municipality || !/^[a-z0-9-]{1,64}$/.test(municipality)) {
+        return badRequest(
+          res,
+          "Invalid municipality. Use lowercase slug format (a-z, 0-9, hyphen), max 64 chars."
+        );
+      }
+    }
+
+    const qRaw = req.query.q;
+    let q = null;
+    if (qRaw !== undefined) {
+      q = String(qRaw).trim();
+      if (!q) {
+        return badRequest(res, "Invalid q. q must not be empty or whitespace.");
+      }
+      if (q.length > 120) {
+        return badRequest(res, "Invalid q. q must be at most 120 characters.");
+      }
+    }
+
     const offset = (page - 1) * limit;
 
     const params = [];
     const where = [];
 
     if (municipality) {
-      params.push(String(municipality).trim().toLowerCase());
+      params.push(municipality);
       where.push(`lower(municipality_key) = $${params.length}`);
     }
 
-    if (q && String(q).trim()) {
+    if (q) {
       const feedColumns = await getVPublicFeedColumns();
-      const qParam = `%${String(q).trim()}%`;
+      const qParam = `%${q}%`;
       const textClauses = [];
 
       if (feedColumns.has("title")) {
@@ -537,7 +600,11 @@ app.get("/api/feed", async (req, res) => {
       items: itemsResult.rows,
     });
   } catch (err) {
-    res.status(500).json({ ok: false, error: "server_error", message: err.message });
+    res.status(500).json({
+      ok: false,
+      error: "server_error",
+      message: safePublicErrorMessage(err, "Server operation failed"),
+    });
   }
 });
 
@@ -644,6 +711,10 @@ app.post("/api/scrape/run", async (req, res) => {
   const municipality_id = req.query.municipality_id ? String(req.query.municipality_id) : null;
 
   const category = req.query.category ? String(req.query.category) : "Vendime";
+  const forcePublish =
+    ["1", "true", "yes", "on"].includes(
+      String(req.query.force_publish || "").trim().toLowerCase()
+    );
   const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 50));
   const year = Number(req.query.year || 2026);
 
@@ -751,8 +822,11 @@ app.post("/api/scrape/run", async (req, res) => {
       scrapedItems = r.items;
     }
 
-    // auto-publish if registry already CHECKED
-    const defaultStatus = registryRow.verification_status === "CHECKED" ? "published" : "draft";
+    // auto-publish if registry already CHECKED, or allow explicit forced publish for one-off runs.
+    const defaultStatus =
+      forcePublish || registryRow.verification_status === "CHECKED"
+        ? "published"
+        : "draft";
 
     // insert items
     let inserted = 0;
@@ -850,6 +924,7 @@ app.post("/api/scrape/run", async (req, res) => {
       scraped_from: usedUrl || targetUrl,
       parsed_rows_total: scrapedItems.length,
       parsed_rows_kept: parsed_kept,
+      force_publish: forcePublish,
       inserted,
       skipped,
       skipped_missing_url,
