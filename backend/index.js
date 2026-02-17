@@ -712,6 +712,7 @@ app.post("/api/scrape/run", async (req, res) => {
   const municipality_id = req.query.municipality_id ? String(req.query.municipality_id) : null;
 
   const category = req.query.category ? String(req.query.category) : "Vendime";
+  const forceRun = String(req.query.force_run || "") === "true";
   const forcePublish =
     ["1", "true", "yes", "on"].includes(
       String(req.query.force_publish || "").trim().toLowerCase()
@@ -741,7 +742,11 @@ app.post("/api/scrape/run", async (req, res) => {
       });
     }
 
-    if (registryRow.cooldown_until_utc && new Date(registryRow.cooldown_until_utc) > new Date()) {
+    if (
+      !forceRun &&
+      registryRow.cooldown_until_utc &&
+      new Date(registryRow.cooldown_until_utc) > new Date()
+    ) {
       return res.status(429).json({
         ok: false,
         error: "cooldown",

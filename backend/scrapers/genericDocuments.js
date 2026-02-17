@@ -340,6 +340,37 @@ function findNextPageUrl({ baseUrl, html }) {
 }
 
 async function fetchHtml(url) {
+  const timeoutMs = 25000;
+  const retryDelayMs = 500;
+
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const isConnectTimeout = (err) =>
+    err?.code === "UND_ERR_CONNECT_TIMEOUT" ||
+    err?.cause?.code === "UND_ERR_CONNECT_TIMEOUT";
+
+  async function fetchWithTimeoutAndConnectRetry(targetUrl, options) {
+    try {
+      return await fetchOnce(targetUrl, options);
+    } catch (err) {
+      if (!isConnectTimeout(err)) throw err;
+      await sleep(retryDelayMs);
+      return fetchOnce(targetUrl, options);
+    }
+  }
+
+  async function fetchOnce(targetUrl, options) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(targetUrl, {
+        ...options,
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   const headersA = {
     "User-Agent":
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
@@ -349,7 +380,10 @@ async function fetchHtml(url) {
     Pragma: "no-cache",
   };
 
-  let res = await fetch(url, { headers: headersA, redirect: "follow" });
+  let res = await fetchWithTimeoutAndConnectRetry(url, {
+    headers: headersA,
+    redirect: "follow",
+  });
 
   // Some sites (and vendime.al) may return 406/403 for botty headers — retry with a slightly different UA.
   if (res.status === 406 || res.status === 403) {
@@ -358,7 +392,10 @@ async function fetchHtml(url) {
       "User-Agent":
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     };
-    res = await fetch(url, { headers: headersB, redirect: "follow" });
+    res = await fetchWithTimeoutAndConnectRetry(url, {
+      headers: headersB,
+      redirect: "follow",
+    });
   }
 
   if (!res.ok) throw new Error(`Fetch failed: ${res.status} ${res.statusText}`);
