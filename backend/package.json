@@ -4,11 +4,12 @@
   "description": "",
   "main": "index.js",
   "type": "commonjs",
-"scripts": {
-  "dev": "node --dns-result-order=ipv4first index.js",
-  "start": "node index.js",
-  "test": "echo \"Error: no test specified\" && exit 1"
-},
+  "scripts": {
+    "dev": "node --dns-result-order=ipv4first index.js",
+    "start": "node index.js",
+    "scrape:tirane": "node scripts/scrape_tirane.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
   "keywords": [],
   "author": "",
   "license": "ISC",
@@ -17,9 +18,11 @@
     "cors": "^2.8.6",
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
+    "express-rate-limit": "^7.5.1",
     "helmet": "^8.1.0",
     "iconv-lite": "^0.7.2",
     "morgan": "^1.10.1",
-    "pg": "^8.18.0"
+    "pg": "^8.18.0",
+    "playwright": "^1.52.0"
   }
 }

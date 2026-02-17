@@ -122,6 +122,62 @@ Feed filtered by municipality key (example: `tirana`):
 curl.exe "http://localhost:5050/api/feed?municipality=tirane&limit=5"
 ```
 
+## Security checks
+
+Backend API protections now include:
+
+- Parameterized SQL queries (`$1`, `$2`, ...) for route-side DB access.
+- Input validation on `/api/feed` (`page`, `limit`, `municipality`, `q`).
+- Basic rate limiting on `/api/*` to reduce abuse bursts.
+
+Quick validation checks (should return HTTP 400 with `{"ok":false,"error":"bad_request","message":"..."}`):
+
+```powershell
+curl.exe -i "http://localhost:5050/api/feed?page=0"
+curl.exe -i "http://localhost:5050/api/feed?limit=999"
+curl.exe -i "http://localhost:5050/api/feed?municipality=tirane!!"
+curl.exe -i "http://localhost:5050/api/feed?q=   "
+```
+
+### 8) Run one end-to-end scraper first (Tirane Vendime)
+
+From `backend/`:
+
+```bash
+npm install
+npm run scrape:tirane
+```
+
+Optional args:
+
+```bash
+node scripts/scrape_tirane.js --year=2026 --limit=50 --base=http://localhost:5050 --force-publish=true
+```
+
+Expected JSON fields include:
+
+- `ok: true`
+- `parsed_rows_total` and `parsed_rows_kept` (both >= 1 when source has rows)
+- `inserted` and `skipped`
+- `force_publish: true`
+
+Verify feed is non-empty:
+
+```powershell
+curl.exe "http://localhost:5050/api/feed?page=1&limit=5"
+```
+
+Expected: `total > 0` and `items` is non-empty.
+
+Idempotency check (run twice):
+
+```bash
+npm run scrape:tirane
+npm run scrape:tirane
+```
+
+Expected: second run should not duplicate rows (`inserted` should usually be `0` unless new source items appeared).
+
 ## Next “must do” items for a public-ready v1
 
 - Make ingestion robust across municipalities (Playwright-first, retries, cooldowns).
