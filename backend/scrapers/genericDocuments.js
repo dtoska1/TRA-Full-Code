@@ -288,6 +288,42 @@ function extractCandidatePostLinks({ baseUrl, html, maxPosts = 15 }) {
   return Array.from(links).slice(0, maxPosts);
 }
 
+function extractVendimePostLinksFromListing({ baseUrl, html, maxPosts = 15 }) {
+  const $ = cheerio.load(html);
+  const links = new Set();
+
+  $("a[href]").each((_, el) => {
+    const href = $(el).attr("href");
+    const abs = makeAbsolute(baseUrl, href);
+    if (!abs) return;
+    if (!isProbablySameSite(baseUrl, abs)) return;
+
+    const low = abs.toLowerCase();
+    if (!low.includes("/vendime_te_keshillit/")) return;
+    if (/\.(png|jpg|jpeg|webp|gif|svg|css|js|map)(\?|#|$)/i.test(low)) return;
+
+    links.add(abs);
+  });
+
+  return Array.from(links).slice(0, maxPosts);
+}
+
+function looksLikePreferredPostDoc(url) {
+  const u = String(url || "").toLowerCase();
+  return (
+    /\.(pdf|doc|docx|zip)(\?|#|$)/i.test(u) ||
+    /\/wp-content\/uploads\//i.test(u)
+  );
+}
+
+function pickBestDocumentFromPost({ postUrl, html }) {
+  const allDocs = extractDocLinksFromHtml({ baseUrl: postUrl, html, pageTitleFallback: "" });
+  if (!allDocs.length) return null;
+
+  const preferred = allDocs.find((it) => looksLikePreferredPostDoc(it.source_url));
+  return preferred || allDocs[0];
+}
+
 function findNextPageUrl({ baseUrl, html }) {
   const $ = cheerio.load(html);
 
@@ -357,11 +393,16 @@ async function scrapeGenericDocuments({ url, limit = 50 }) {
       const postLinks = extractCandidatePostLinks({
         baseUrl: pageUrl,
         html: listingHtml,
-        maxPosts: 20,
+        maxPosts: lim,
       });
+      const needsVendimeFallback = direct.length === 0;
+      const vendimePostLinks = needsVendimeFallback
+        ? extractVendimePostLinksFromListing({ baseUrl: pageUrl, html: listingHtml, maxPosts: lim })
+        : [];
+      const mergedPostLinks = Array.from(new Set([...vendimePostLinks, ...postLinks])).slice(0, lim);
 
-      for (const postUrl of postLinks) {
-        if (items.length >= lim * 2) break;
+      for (const postUrl of mergedPostLinks) {
+        if (items.length >= lim) break;
 
         let postHtml;
         try {
@@ -370,23 +411,16 @@ async function scrapeGenericDocuments({ url, limit = 50 }) {
           continue;
         }
 
-        const more = extractDocLinksFromHtml({
-          baseUrl: postUrl,
-          html: postHtml,
-          pageTitleFallback: "",
-        });
+        const best = pickBestDocumentFromPost({ postUrl, html: postHtml });
+        if (!best?.source_url) continue;
+        const ok =
+          getHost(url) === getHost(best.source_url) ||
+          isProbablySameSite(url, best.source_url);
+        if (!ok) continue;
 
-        for (const it of more) {
-          if (!it?.source_url) continue;
-          const ok =
-            getHost(url) === getHost(it.source_url) ||
-            isProbablySameSite(url, it.source_url);
-          if (!ok) continue;
-
-          if (seenDocs.has(it.source_url)) continue;
-          seenDocs.add(it.source_url);
-          items.push(it);
-        }
+        if (seenDocs.has(best.source_url)) continue;
+        seenDocs.add(best.source_url);
+        items.push(best);
       }
     }
 
