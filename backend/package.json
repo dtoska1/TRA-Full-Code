@@ -8,7 +8,8 @@
     "dev": "node --dns-result-order=ipv4first index.js",
     "start": "node index.js",
     "scrape:tirane": "node scripts/scrape_tirane.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "sanity:registry": "node scripts/sanity_registry.js"
   },
   "keywords": [],
   "author": "",
