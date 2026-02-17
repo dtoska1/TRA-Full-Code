@@ -49,7 +49,18 @@ Expected: `count = 61`
 
 ⚠️ `schema_verification_check.sql` inserts test rows into `municipalities`. Run it only on a scratch DB if you want the municipality set to remain exactly 61.
 
-### 4) Configure backend env
+### 4) Seed source_registry (must be 61 primary rows)
+
+`/api/scrape/run` requires a PRIMARY `source_registry` row per municipality. Seed it like this:
+
+```powershell
+Get-Content -Raw -Encoding UTF8 .\006_seed_source_registry.sql | docker exec -i tra_postgres psql -U tra -d tra -v ON_ERROR_STOP=1
+docker exec -it tra_postgres psql -U tra -d tra -c "SELECT count(*) FROM source_registry WHERE is_primary = TRUE;"
+```
+
+Expected: `count = 61`
+
+### 5) Configure backend env
 
 Backend expects `.env` in `backend/` (untracked). Start from the template:
 
@@ -66,7 +77,7 @@ Example (local-only values):
 
 > `POSTGRES_PASSWORD` should match what is set in `docker-compose.yml` for the Postgres service (or whatever password your existing DB volume was initialized with).
 
-### 5) Run the backend API
+### 6) Run the backend API
 
 ```bash
 cd backend
@@ -78,7 +89,7 @@ Health check:
 
 - `http://localhost:5050/health`
 
-### 6) Verify health/readiness checks
+### 7) Verify health/readiness checks
 
 With backend running (`cd backend && npm run dev`), verify all dependencies:
 
@@ -102,7 +113,7 @@ docker start tra_postgres
 
 Expected while Postgres is stopped: HTTP `503` and payload including `db: "error"` plus `errors.db` with the connection/timeout reason.
 
-### 7) Verify public read API (v1 website feed)
+### 8) Verify public read API (v1 website feed)
 
 List municipalities (should return `total: 61` and 61 items):
 
@@ -122,6 +133,25 @@ Feed filtered by municipality key (example: `tirana`):
 curl.exe "http://localhost:5050/api/feed?municipality=tirane&limit=5"
 ```
 
+## Sanity checks (quick)
+
+From repo root (PowerShell):
+
+```powershell
+docker exec -it tra_postgres psql -U tra -d tra -c "SELECT count(*) FROM municipalities;"
+docker exec -it tra_postgres psql -U tra -d tra -c "SELECT count(*) FROM source_registry WHERE is_primary = TRUE;"
+```
+
+Expected: both `count = 61`
+
+With backend running:
+
+```powershell
+curl.exe "http://localhost:5050/api/feed?municipality=tirane&limit=5"
+```
+
+Expected: `ok: true` and `items` non-empty after you run the Tirane scraper.
+
 ## Security checks
 
 Backend API protections now include:
@@ -139,7 +169,7 @@ curl.exe -i "http://localhost:5050/api/feed?municipality=tirane!!"
 curl.exe -i "http://localhost:5050/api/feed?q=   "
 ```
 
-### 8) Run one end-to-end scraper first (Tirane Vendime)
+### 9) Run one end-to-end scraper first (Tirane Vendime)
 
 From `backend/`:
 
