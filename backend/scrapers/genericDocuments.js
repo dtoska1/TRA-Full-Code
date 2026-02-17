@@ -49,6 +49,34 @@ function isProbablySameSite(baseUrl, candidateUrl) {
   }
 }
 
+function hasAllowedOfficeOrPdfExt(url) {
+  const u = String(url || "").toLowerCase();
+  return /\.(pdf|doc|docx|xls|xlsx)(\?|#|$)/i.test(u);
+}
+
+function unwrapViewerFileUrl(url) {
+  try {
+    const parsed = new URL(url);
+    if (!/\/viewer\.php$/i.test(parsed.pathname)) return null;
+
+    const fileParam = parsed.searchParams.get("file");
+    if (!fileParam) return null;
+
+    const embedded = makeAbsolute(url, fileParam);
+    if (!embedded) return null;
+    if (!hasAllowedOfficeOrPdfExt(embedded)) return null;
+    return embedded;
+  } catch {
+    return null;
+  }
+}
+
+function resolveDocumentCandidateUrl(baseUrl, href) {
+  const abs = makeAbsolute(baseUrl, href);
+  if (!abs) return null;
+  return unwrapViewerFileUrl(abs) || abs;
+}
+
 // ✅ strict “Vendime-like document” detection
 function looksLikeDoc(url) {
   const u = String(url || "").toLowerCase();
@@ -178,7 +206,7 @@ function extractDocLinksFromHtml({ baseUrl, html, pageTitleFallback = "" }) {
   // 1) normal anchors
   $("a").each((_, el) => {
     const href = $(el).attr("href");
-    const abs = makeAbsolute(baseUrl, href);
+    const abs = resolveDocumentCandidateUrl(baseUrl, href);
     if (!abs) return;
     if (!looksLikeDoc(abs)) return;
 
@@ -193,7 +221,7 @@ function extractDocLinksFromHtml({ baseUrl, html, pageTitleFallback = "" }) {
   // 2) iframe/embed/object/source
   $("iframe, embed, object, source").each((_, el) => {
     const src = $(el).attr("src") || $(el).attr("data");
-    const abs = makeAbsolute(baseUrl, src);
+    const abs = resolveDocumentCandidateUrl(baseUrl, src);
     if (!abs) return;
     if (!looksLikeDoc(abs)) return;
 
@@ -209,7 +237,7 @@ function extractDocLinksFromHtml({ baseUrl, html, pageTitleFallback = "" }) {
       $(el).attr("data-file") ||
       $(el).attr("data-src");
 
-    const abs = makeAbsolute(baseUrl, cand);
+    const abs = resolveDocumentCandidateUrl(baseUrl, cand);
     if (!abs) return;
     if (!looksLikeDoc(abs)) return;
 
@@ -224,7 +252,7 @@ function extractDocLinksFromHtml({ baseUrl, html, pageTitleFallback = "" }) {
     const urls = extractUrlsFromOnclick(onclick);
 
     for (const u of urls) {
-      const abs = makeAbsolute(baseUrl, u);
+      const abs = resolveDocumentCandidateUrl(baseUrl, u);
       if (!abs) continue;
       if (!looksLikeDoc(abs)) continue;
 
@@ -238,7 +266,7 @@ function extractDocLinksFromHtml({ baseUrl, html, pageTitleFallback = "" }) {
   const re = /(https?:\/\/[^\s"'<>]+|\/wp-content\/uploads\/[^\s"'<>]+)/gi;
   const raw = html.match(re) || [];
   for (const x of raw) {
-    const abs = makeAbsolute(baseUrl, x);
+    const abs = resolveDocumentCandidateUrl(baseUrl, x);
     if (!abs) continue;
     if (!looksLikeDoc(abs)) continue;
 
@@ -291,6 +319,7 @@ function extractCandidatePostLinks({ baseUrl, html, maxPosts = 15 }) {
 function extractVendimePostLinksFromListing({ baseUrl, html, maxPosts = 15 }) {
   const $ = cheerio.load(html);
   const links = new Set();
+  const vendimeLikePath = /(^|[-_/])vendime(t|ve)?([-_/]|$)/i;
 
   $("a[href]").each((_, el) => {
     const href = $(el).attr("href");
@@ -298,8 +327,16 @@ function extractVendimePostLinksFromListing({ baseUrl, html, maxPosts = 15 }) {
     if (!abs) return;
     if (!isProbablySameSite(baseUrl, abs)) return;
 
+    let path = "";
+    try {
+      path = new URL(abs).pathname.toLowerCase();
+    } catch {
+      return;
+    }
+    if (/(\/category\/|\/tag\/)/i.test(path)) return;
+
     const low = abs.toLowerCase();
-    if (!low.includes("/vendime_te_keshillit/")) return;
+    if (!vendimeLikePath.test(path)) return;
     if (/\.(png|jpg|jpeg|webp|gif|svg|css|js|map)(\?|#|$)/i.test(low)) return;
 
     links.add(abs);

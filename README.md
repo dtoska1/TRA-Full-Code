@@ -208,6 +208,15 @@ npm run scrape:tirane
 
 Expected: second run should not duplicate rows (`inserted` should usually be `0` unless new source items appeared).
 
+Quick vendime parser smoke check (Mat):
+
+```bash
+cd backend
+node scripts/smoke_scrape_vendime.js --only=mat --limitMunicipalities=1 --shuffle=false
+```
+
+Expected: output line for `mat` with `parsed_rows_kept > 0` (reported as the third numeric field).
+
 ## Next “must do” items for a public-ready v1
 
 - Make ingestion robust across municipalities (Playwright-first, retries, cooldowns).
