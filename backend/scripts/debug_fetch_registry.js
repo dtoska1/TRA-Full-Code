@@ -116,11 +116,33 @@ async function main() {
 
     const $ = cheerio.load(html);
     const links = [];
+    const candidateLinks = [];
+    const seenCandidateHrefs = new Set();
     $("a[href]").each((_, el) => {
-      if (links.length >= 10) return false;
       const href = ($(el).attr("href") || "").trim();
       const text = $(el).text().replace(/\s+/g, " ").trim();
-      links.push({ text, href });
+
+      if (links.length < 10) {
+        links.push({ text, href });
+      }
+
+      if (href && candidateLinks.length < 30) {
+        const hrefLow = href.toLowerCase();
+        const textLow = text.toLowerCase();
+        const isCandidate =
+          /\.(pdf|doc|docx|zip|rar)(\?|#|$)/i.test(href) ||
+          hrefLow.includes("wp-content/uploads") ||
+          hrefLow.includes("download") ||
+          hrefLow.includes("vendim") ||
+          textLow.includes("vendim");
+
+        if (isCandidate && !seenCandidateHrefs.has(href)) {
+          seenCandidateHrefs.add(href);
+          candidateLinks.push({ text, href });
+        }
+      }
+
+      if (links.length >= 10 && candidateLinks.length >= 30) return false;
       return undefined;
     });
 
@@ -133,8 +155,24 @@ async function main() {
         console.log(`  ${i + 1}. text="${item.text}" href="${item.href}"`);
       }
     }
+
+    console.log("\nCandidate document links:");
+    if (!candidateLinks.length) {
+      console.log("  <no candidate links found>");
+    } else {
+      for (let i = 0; i < candidateLinks.length; i++) {
+        const item = candidateLinks[i];
+        console.log(`  ${i + 1}. text="${item.text}" href="${item.href}"`);
+      }
+    }
   } catch (err) {
-    console.error("ERROR:", err?.message || err);
+    console.error("ERROR:");
+    console.error(`  name: ${err?.name || "<unknown>"}`);
+    console.error(`  message: ${err?.message || String(err)}`);
+    if (err?.cause) {
+      if (err.cause.code) console.error(`  cause.code: ${err.cause.code}`);
+      if (err.cause.message) console.error(`  cause.message: ${err.cause.message}`);
+    }
     process.exit(2);
   } finally {
     try {
