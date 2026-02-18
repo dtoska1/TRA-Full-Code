@@ -1006,10 +1006,9 @@ app.post("/api/scrape/run", async (req, res) => {
         }
 
         // auto-publish if registry already CHECKED, or allow explicit forced publish for one-off runs.
-        const defaultStatus =
-          forcePublish || registryRow.verification_status === "CHECKED"
-            ? "published"
-            : "draft";
+        const shouldPublish =
+          forcePublish || registryRow.verification_status === "CHECKED";
+        const defaultStatus = shouldPublish ? "published" : "draft";
 
         // insert items
         let inserted = 0;
@@ -1018,6 +1017,8 @@ app.post("/api/scrape/run", async (req, res) => {
         let skipped_missing_url = 0;
         let parsed_kept = 0;
         let sample_kept_title = null;
+        const keptUrls = [];
+        let publishedUpdated = 0;
 
         for (const it of scrapedItems) {
           const title = it.title || "";
@@ -1039,6 +1040,7 @@ app.post("/api/scrape/run", async (req, res) => {
 
           parsed_kept++;
           if (!sample_kept_title) sample_kept_title = title;
+          keptUrls.push(sourceUrl);
 
           const dateUnknown = published_date ? false : true;
           const dedupKey = `vendime|${municipalityId}|${it.number || ""}|${sourceUrl || ""}`;
@@ -1085,6 +1087,22 @@ app.post("/api/scrape/run", async (req, res) => {
           else skipped++;
         }
 
+        if (shouldPublish && keptUrls.length > 0) {
+          const publishUpdate = await pool.query(
+            `
+            UPDATE items
+            SET status = 'published',
+                updated_at = now()
+            WHERE municipality_id = $1
+              AND category = $2
+              AND status <> 'published'
+              AND source_url = ANY($3::text[])
+            `,
+            [municipalityId, "Vendime", keptUrls]
+          );
+          publishedUpdated = publishUpdate.rowCount;
+        }
+
         // success update
         await pool.query(
           `
@@ -1108,7 +1126,9 @@ app.post("/api/scrape/run", async (req, res) => {
           parsed_rows_total: scrapedItems.length,
           parsed_rows_kept: parsed_kept,
           force_publish: forcePublish,
+          should_publish: shouldPublish,
           inserted,
+          published_updated: publishedUpdated,
           skipped,
           skipped_missing_url,
           skipped_not_vendim,

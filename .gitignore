@@ -32,3 +32,5 @@ backend/.pw-profile/
 /tatus
 *.tmp
 *.log
+audit_municipality_keys_output.txt
+*_output.txt
