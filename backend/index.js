@@ -76,6 +76,10 @@ const HTTP_403_COOLDOWN_MINUTES = (() => {
   const raw = Number.parseInt(String(process.env.HTTP_403_COOLDOWN_MINUTES || ""), 10);
   return Number.isFinite(raw) && raw > 0 ? raw : 10080;
 })();
+const SCRAPE_JOB_TIMEOUT_MS = (() => {
+  const raw = Number.parseInt(String(process.env.SCRAPE_JOB_TIMEOUT_MS || ""), 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 90000;
+})();
 
 pool.on("connect", (client) => {
   client
@@ -89,12 +93,20 @@ pool.on("error", (err) => {
 });
 
 function withTimeout(promise, timeoutMs, timeoutMessage) {
-  return Promise.race([
-    promise,
-    new Promise((_, reject) =>
-      setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs)
-    ),
-  ]);
+  let timeoutHandle = null;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutHandle = setTimeout(() => {
+      const err = new Error(`Timeout: ${timeoutMessage}`);
+      err.code = "TIMEOUT";
+      err.last_error_type = "TIMEOUT";
+      err.timeout_label = timeoutMessage;
+      reject(err);
+    }, timeoutMs);
+  });
+
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+  });
 }
 
 async function checkDb() {
@@ -826,143 +838,161 @@ app.post("/api/scrape/run", async (req, res) => {
       [registryRow.id, nextBuckets]
     );
 
-    // scrape
-    const systemUserId = await getSystemUserId();
+    const successPayload = await withTimeout(
+      (async () => {
+        // scrape
+        const systemUserId = await getSystemUserId();
+        let usedUrl = targetUrl;
+        let scrapedItems = [];
 
-    let usedUrl = targetUrl;
-    let scrapedItems = [];
+        const host = getHost(targetUrl);
+        if (host.endsWith("tirana.al")) {
+          const r = await scrapeTiranaVendime({ year, limit, urlOverride: targetUrl });
+          usedUrl = r.url;
+          scrapedItems = r.items;
+        } else {
+          const r = await scrapeGenericDocuments({ url: targetUrl, limit });
+          usedUrl = r.url;
+          scrapedItems = r.items;
+        }
 
-    const host = getHost(targetUrl);
+        // auto-publish if registry already CHECKED, or allow explicit forced publish for one-off runs.
+        const defaultStatus =
+          forcePublish || registryRow.verification_status === "CHECKED"
+            ? "published"
+            : "draft";
 
-    if (host.endsWith("tirana.al")) {
-      const r = await scrapeTiranaVendime({ year, limit, urlOverride: targetUrl });
-      usedUrl = r.url;
-      scrapedItems = r.items;
-    } else {
-      const r = await scrapeGenericDocuments({ url: targetUrl, limit });
-      usedUrl = r.url;
-      scrapedItems = r.items;
-    }
+        // insert items
+        let inserted = 0;
+        let skipped = 0;
+        let skipped_not_vendim = 0;
+        let skipped_missing_url = 0;
+        let parsed_kept = 0;
+        let sample_kept_title = null;
 
-    // auto-publish if registry already CHECKED, or allow explicit forced publish for one-off runs.
-    const defaultStatus =
-      forcePublish || registryRow.verification_status === "CHECKED"
-        ? "published"
-        : "draft";
+        for (const it of scrapedItems) {
+          const title = it.title || "";
+          const published_date_raw = it.published_date || null;
+          const published_date = sanitizeISODate(published_date_raw);
 
-    // insert items
-    let inserted = 0;
-    let skipped = 0;
-    let skipped_not_vendim = 0;
-    let skipped_missing_url = 0;
-    let parsed_kept = 0;
-    let sample_kept_title = null;
+          const sourceUrl = makeAbsoluteUrl(usedUrl || targetUrl, it.source_url);
+          if (!sourceUrl) {
+            skipped++;
+            skipped_missing_url++;
+            continue;
+          }
 
-    for (const it of scrapedItems) {
-      const title = it.title || "";
-      const published_date_raw = it.published_date || null;
-      const published_date = sanitizeISODate(published_date_raw);
+          if (!looksLikeVendim(title, sourceUrl)) {
+            skipped++;
+            skipped_not_vendim++;
+            continue;
+          }
 
-      const sourceUrl = makeAbsoluteUrl(usedUrl || targetUrl, it.source_url);
-      if (!sourceUrl) {
-        skipped++;
-        skipped_missing_url++;
-        continue;
-      }
+          parsed_kept++;
+          if (!sample_kept_title) sample_kept_title = title;
 
-      if (!looksLikeVendim(title, sourceUrl)) {
-        skipped++;
-        skipped_not_vendim++;
-        continue;
-      }
+          const dateUnknown = published_date ? false : true;
+          const dedupKey = `vendime|${municipalityId}|${it.number || ""}|${sourceUrl || ""}`;
 
-      parsed_kept++;
-      if (!sample_kept_title) sample_kept_title = title;
+          const ins = await pool.query(
+            `
+            INSERT INTO items (
+              municipality_id, category,
+              title, title_normalized, summary,
+              published_date, date_unknown, date_source,
+              source_url, source_url_missing_reason,
+              collected_at, ingestion_method,
+              dedup_key, possible_duplicate,
+              status, created_by_user_id
+            )
+            VALUES (
+              $1, $2,
+              $3, $4, NULL,
+              $5::date, $6, 'scrape_registry',
+              $7, NULL,
+              now(), 'scrape',
+              $8, false,
+              $9, $10
+            )
+            ON CONFLICT (source_url) WHERE source_url IS NOT NULL
+            DO NOTHING
+            RETURNING id
+            `,
+            [
+              municipalityId,
+              "Vendime",
+              title,
+              it.title_normalized || normalizeTitle(title),
+              published_date,
+              dateUnknown,
+              sourceUrl,
+              dedupKey,
+              defaultStatus,
+              systemUserId,
+            ]
+          );
 
-      const dateUnknown = published_date ? false : true;
-      const dedupKey = `vendime|${municipalityId}|${it.number || ""}|${sourceUrl || ""}`;
+          if (ins.rowCount === 1) inserted++;
+          else skipped++;
+        }
 
-      const ins = await pool.query(
-        `
-        INSERT INTO items (
-          municipality_id, category,
-          title, title_normalized, summary,
-          published_date, date_unknown, date_source,
-          source_url, source_url_missing_reason,
-          collected_at, ingestion_method,
-          dedup_key, possible_duplicate,
-          status, created_by_user_id
-        )
-        VALUES (
-          $1, $2,
-          $3, $4, NULL,
-          $5::date, $6, 'scrape_registry',
-          $7, NULL,
-          now(), 'scrape',
-          $8, false,
-          $9, $10
-        )
-        ON CONFLICT (source_url) WHERE source_url IS NOT NULL
-        DO NOTHING
-        RETURNING id
-        `,
-        [
-          municipalityId,
-          "Vendime",
-          title,
-          it.title_normalized || normalizeTitle(title),
-          published_date,
-          dateUnknown,
-          sourceUrl,
-          dedupKey,
-          defaultStatus,
-          systemUserId,
-        ]
-      );
+        // success update
+        await pool.query(
+          `
+          UPDATE source_registry
+          SET
+            last_seen_utc = now(),
+            last_error_type = NULL,
+            cooldown_until_utc = NULL
+          WHERE id = $1
+          `,
+          [registryRow.id]
+        );
 
-      if (ins.rowCount === 1) inserted++;
-      else skipped++;
-    }
-
-    // success update
-    await pool.query(
-      `
-      UPDATE source_registry
-      SET
-        last_seen_utc = now(),
-        last_error_type = NULL,
-        cooldown_until_utc = NULL
-      WHERE id = $1
-      `,
-      [registryRow.id]
+        return {
+          ok: true,
+          municipality: municipality || municipalityId,
+          municipality_id: municipalityId,
+          category: "Vendime",
+          used_registry_id: registryRow.id,
+          scraped_from: usedUrl || targetUrl,
+          parsed_rows_total: scrapedItems.length,
+          parsed_rows_kept: parsed_kept,
+          force_publish: forcePublish,
+          inserted,
+          skipped,
+          skipped_missing_url,
+          skipped_not_vendim,
+          sample_title: sample_kept_title || scrapedItems[0]?.title || null,
+          next: "Next: run the remaining checked municipalities and confirm parsed_rows_kept > 0.",
+        };
+      })(),
+      SCRAPE_JOB_TIMEOUT_MS,
+      `scrape municipality ${municipalityId}`
     );
 
-    return res.json({
-      ok: true,
-      municipality: municipality || municipalityId,
-      municipality_id: municipalityId,
-      category: "Vendime",
-      used_registry_id: registryRow.id,
-      scraped_from: usedUrl || targetUrl,
-      parsed_rows_total: scrapedItems.length,
-      parsed_rows_kept: parsed_kept,
-      force_publish: forcePublish,
-      inserted,
-      skipped,
-      skipped_missing_url,
-      skipped_not_vendim,
-      sample_title: sample_kept_title || scrapedItems[0]?.title || null,
-      next: "Next: run the remaining checked municipalities and confirm parsed_rows_kept > 0.",
-    });
+    return res.json(successPayload);
   } catch (err) {
     const causeCode = err?.cause?.code || err?.code || "";
     const explicitErrorType = String(
       err?.last_error_type || err?.code || ""
     ).toUpperCase();
+    const networkDownCodes = new Set([
+      "ENOTFOUND",
+      "EAI_AGAIN",
+      "ECONNREFUSED",
+      "ECONNRESET",
+      "ETIMEDOUT",
+      "UND_ERR_CONNECT_TIMEOUT",
+    ]);
     let errorType = "SCRAPE_ERROR";
 
     if (/^HTTP_\d{3}$/.test(explicitErrorType)) {
       errorType = explicitErrorType;
+    } else if (explicitErrorType === "TIMEOUT" || causeCode === "TIMEOUT") {
+      errorType = "TIMEOUT";
+    } else if (networkDownCodes.has(explicitErrorType) || networkDownCodes.has(String(causeCode).toUpperCase())) {
+      errorType = "UPSTREAM_DOWN";
     } else if (causeCode === "CERT_HAS_EXPIRED") {
       errorType = "TLS_CERT_EXPIRED";
     } else if (causeCode === "DEPTH_ZERO_SELF_SIGNED_CERT") {
@@ -979,6 +1009,9 @@ app.post("/api/scrape/run", async (req, res) => {
       : 30;
     const finalUrlOnError = String(err?.final_url || "").trim() || null;
     let updatedState = null;
+    const controlledFailure =
+      /^HTTP_\d{3}$/.test(errorType) ||
+      ["TIMEOUT", "UPSTREAM_DOWN", "TLS_CERT_EXPIRED", "TLS_SELF_SIGNED", "TLS_UNVERIFIED_CHAIN"].includes(errorType);
 
     if (registryRow?.id) {
       const updated = await pool.query(
@@ -987,7 +1020,11 @@ app.post("/api/scrape/run", async (req, res) => {
         SET
           last_error_type = $2,
           cooldown_until_utc = now() + make_interval(mins => $3::int),
-          homepage_status = CASE WHEN $2 = 'HTTP_403' THEN 'BLOCKED' ELSE homepage_status END,
+          homepage_status = CASE
+            WHEN $2 = 'HTTP_403' THEN 'BLOCKED'
+            WHEN $2 = 'TIMEOUT' THEN 'ERROR'
+            ELSE homepage_status
+          END,
           feasibility = CASE WHEN $2 = 'HTTP_403' THEN 'C' ELSE feasibility END,
           final_url = COALESCE($4, final_url)
         WHERE id = $1
@@ -998,10 +1035,24 @@ app.post("/api/scrape/run", async (req, res) => {
       updatedState = updated.rows[0] || null;
     }
 
-    return res.status(errorType === "HTTP_403" ? 403 : 502).json({
+    if (errorType === "HTTP_403") {
+      console.warn(
+        `[scrape.run] blocked municipality_id=${municipalityId || "unknown"} final_url=${finalUrlOnError || "-"}`
+      );
+    } else if (errorType === "TIMEOUT") {
+      console.warn(
+        `[scrape.run] timeout municipality_id=${municipalityId || "unknown"} label=${err?.timeout_label || "scrape job"}`
+      );
+    }
+
+    return res.status(controlledFailure ? 200 : 500).json({
       ok: false,
       error: "scrape_error",
       message: String(err?.message || err),
+      scrape_error:
+        errorType === "TIMEOUT"
+          ? `Timeout: ${err?.timeout_label || "scrape job"}`
+          : undefined,
       cause: causeCode || null,
       last_error_type: errorType,
       homepage_status: updatedState?.homepage_status || null,

@@ -5,6 +5,14 @@ const HTTP_403_COOLDOWN_MINUTES = (() => {
   const raw = Number.parseInt(String(process.env.HTTP_403_COOLDOWN_MINUTES || ""), 10);
   return Number.isFinite(raw) && raw > 0 ? raw : 10080;
 })();
+const SCRAPE_REQUEST_TIMEOUT_MS = (() => {
+  const raw = Number.parseInt(String(process.env.SCRAPE_REQUEST_TIMEOUT_MS || ""), 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 20000;
+})();
+const MAX_CLOUDFLARE_REDIRECTS = (() => {
+  const raw = Number.parseInt(String(process.env.MAX_CLOUDFLARE_REDIRECTS || ""), 10);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 2;
+})();
 
 function normalizeTitle(s) {
   return String(s || "")
@@ -46,6 +54,17 @@ function getHost(url) {
 
 function isCloudflareChallengeUrl(url) {
   return String(url || "").toLowerCase().includes("__cf_chl");
+}
+
+function makeBlockedError(finalUrl, message) {
+  const err = new Error(message || `Cloudflare challenge detected at ${finalUrl}`);
+  err.code = "HTTP_403";
+  err.last_error_type = "HTTP_403";
+  err.homepage_status = "BLOCKED";
+  err.feasibility = "C";
+  err.cooldown_minutes = HTTP_403_COOLDOWN_MINUTES;
+  err.final_url = finalUrl;
+  return err;
 }
 
 function isProbablySameSite(baseUrl, candidateUrl) {
@@ -385,8 +404,15 @@ function findNextPageUrl({ baseUrl, html }) {
   return null;
 }
 
-async function fetchHtml(url) {
-  const timeoutMs = 25000;
+async function fetchHtml(url, options = {}) {
+  const targetUrl = url;
+  const timeoutMs = Number.isFinite(Number(options.requestTimeoutMs))
+    ? Number(options.requestTimeoutMs)
+    : SCRAPE_REQUEST_TIMEOUT_MS;
+  const maxCloudflareRedirects = Number.isFinite(Number(options.maxCloudflareRedirects))
+    ? Number(options.maxCloudflareRedirects)
+    : MAX_CLOUDFLARE_REDIRECTS;
+  const state = options.state || { cloudflareRedirectHits: 0 };
   const retryDelayMs = 500;
 
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -412,6 +438,15 @@ async function fetchHtml(url) {
         ...options,
         signal: controller.signal,
       });
+    } catch (err) {
+      if (err?.name === "AbortError") {
+        const timeoutErr = new Error(`Request timed out after ${timeoutMs}ms: ${targetUrl}`);
+        timeoutErr.code = "TIMEOUT";
+        timeoutErr.last_error_type = "TIMEOUT";
+        timeoutErr.final_url = targetUrl;
+        throw timeoutErr;
+      }
+      throw err;
     } finally {
       clearTimeout(timer);
     }
@@ -426,7 +461,7 @@ async function fetchHtml(url) {
     Pragma: "no-cache",
   };
 
-  let res = await fetchWithTimeoutAndConnectRetry(url, {
+  let res = await fetchWithTimeoutAndConnectRetry(targetUrl, {
     headers: headersA,
     redirect: "follow",
   });
@@ -438,22 +473,28 @@ async function fetchHtml(url) {
       "User-Agent":
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     };
-    res = await fetchWithTimeoutAndConnectRetry(url, {
-      headers: headersB,
-      redirect: "follow",
-    });
+    if (res.status === 406) {
+      res = await fetchWithTimeoutAndConnectRetry(targetUrl, {
+        headers: headersB,
+        redirect: "follow",
+      });
+    }
   }
 
   const finalUrl = String(res.url || url);
+  if (res.status === 403) {
+    throw makeBlockedError(finalUrl, `Cloudflare or bot block detected (HTTP 403) at ${finalUrl}`);
+  }
+
   if (isCloudflareChallengeUrl(finalUrl)) {
-    const err = new Error(`Cloudflare challenge detected at ${finalUrl}`);
-    err.code = "HTTP_403";
-    err.last_error_type = "HTTP_403";
-    err.homepage_status = "BLOCKED";
-    err.feasibility = "C";
-    err.cooldown_minutes = HTTP_403_COOLDOWN_MINUTES;
-    err.final_url = finalUrl;
-    throw err;
+    state.cloudflareRedirectHits = Number(state.cloudflareRedirectHits || 0) + 1;
+    if (state.cloudflareRedirectHits > maxCloudflareRedirects) {
+      throw makeBlockedError(
+        finalUrl,
+        `Cloudflare challenge loop detected (${state.cloudflareRedirectHits} > ${maxCloudflareRedirects}) at ${finalUrl}`
+      );
+    }
+    throw makeBlockedError(finalUrl, `Cloudflare challenge detected at ${finalUrl}`);
   }
 
   if (!res.ok) {
@@ -472,17 +513,27 @@ async function fetchHtml(url) {
 }
 
 
-async function scrapeGenericDocuments({ url, limit = 50 }) {
+async function scrapeGenericDocuments({
+  url,
+  limit = 50,
+  requestTimeoutMs = SCRAPE_REQUEST_TIMEOUT_MS,
+  maxCloudflareRedirects = MAX_CLOUDFLARE_REDIRECTS,
+}) {
   const lim = Math.max(1, Math.min(200, Number(limit) || 50));
 
   const seenDocs = new Set();
   const items = [];
+  const state = { cloudflareRedirectHits: 0 };
 
   const maxListingPages = 5;
   let pageUrl = url;
 
   for (let page = 1; page <= maxListingPages; page++) {
-    const listingFetch = await fetchHtml(pageUrl);
+    const listingFetch = await fetchHtml(pageUrl, {
+      requestTimeoutMs,
+      maxCloudflareRedirects,
+      state,
+    });
     const listingHtml = listingFetch.html;
 
     // A) docs directly on listing
@@ -512,7 +563,11 @@ async function scrapeGenericDocuments({ url, limit = 50 }) {
 
         let postHtml;
         try {
-          const postFetch = await fetchHtml(postUrl);
+          const postFetch = await fetchHtml(postUrl, {
+            requestTimeoutMs,
+            maxCloudflareRedirects,
+            state,
+          });
           postHtml = postFetch.html;
         } catch {
           continue;
