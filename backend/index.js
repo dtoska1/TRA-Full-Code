@@ -302,6 +302,7 @@ function formatCheckError(err, fallbackMessage) {
 }
 
 let _vPublicFeedColumns = null;
+let _hasMunicipalityKeyAliasesTable = null;
 async function getVPublicFeedColumns() {
   if (_vPublicFeedColumns) return _vPublicFeedColumns;
   const r = await pool.query(
@@ -313,6 +314,15 @@ async function getVPublicFeedColumns() {
   );
   _vPublicFeedColumns = new Set(r.rows.map((row) => row.column_name));
   return _vPublicFeedColumns;
+}
+
+async function hasMunicipalityKeyAliasesTable() {
+  if (_hasMunicipalityKeyAliasesTable !== null) return _hasMunicipalityKeyAliasesTable;
+  const r = await pool.query(
+    `SELECT to_regclass('public.municipality_key_aliases')::text AS table_name`
+  );
+  _hasMunicipalityKeyAliasesTable = Boolean(r.rows[0]?.table_name);
+  return _hasMunicipalityKeyAliasesTable;
 }
 
 function parsePositiveInt(value, fallback) {
@@ -462,11 +472,24 @@ async function getMunicipalityId({ municipality, municipality_id }) {
   if (!municipality) return null;
 
   const key = toNameKey(municipality);
+  const aliasTableExists = await hasMunicipalityKeyAliasesTable();
 
-  const r = await pool.query(
-    `SELECT id FROM municipalities WHERE name_key = $1 LIMIT 1`,
-    [key]
-  );
+  const r = aliasTableExists
+    ? await pool.query(
+        `
+        SELECT m.id
+        FROM municipalities m
+        LEFT JOIN municipality_key_aliases a ON a.municipality_id = m.id
+        WHERE lower(m.name_key) = $1 OR lower(a.alias_key) = $1
+        ORDER BY CASE WHEN lower(m.name_key) = $1 THEN 0 ELSE 1 END
+        LIMIT 1
+        `,
+        [key]
+      )
+    : await pool.query(
+        `SELECT id FROM municipalities WHERE lower(name_key) = $1 LIMIT 1`,
+        [key]
+      );
   return r.rowCount ? r.rows[0].id : null;
 }
 
@@ -677,8 +700,14 @@ app.get("/api/feed", async (req, res) => {
     const where = [];
 
     if (municipality) {
-      params.push(municipality);
-      where.push(`lower(municipality_key) = $${params.length}`);
+      const municipalityId = await getMunicipalityId({ municipality });
+      if (municipalityId) {
+        params.push(municipalityId);
+        where.push(`municipality_id = $${params.length}`);
+      } else {
+        // Keep API shape stable for unknown municipality keys: return empty result set.
+        where.push("1 = 0");
+      }
     }
 
     if (q) {

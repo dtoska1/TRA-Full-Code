@@ -34,6 +34,7 @@ Get-Content -Raw -Encoding UTF8 .\001_init.sql | docker exec -i tra_postgres psq
 Get-Content -Raw -Encoding UTF8 .\002_hardening.sql | docker exec -i tra_postgres psql -U tra -d tra -v ON_ERROR_STOP=1
 Get-Content -Raw -Encoding UTF8 .\003_views_and_keys.sql | docker exec -i tra_postgres psql -U tra -d tra -v ON_ERROR_STOP=1
 Get-Content -Raw -Encoding UTF8 .\004_name_key_trigger.sql | docker exec -i tra_postgres psql -U tra -d tra -v ON_ERROR_STOP=1
+Get-Content -Raw -Encoding UTF8 .\014_municipality_key_aliases.sql | docker exec -i tra_postgres psql -U tra -d tra -v ON_ERROR_STOP=1
 ```
 
 > Note (Windows/PowerShell): `< file.sql` redirection is not reliable. Use `Get-Content -Raw ... | docker exec -i ...` instead.
@@ -170,6 +171,23 @@ curl.exe "http://localhost:5050/api/feed?municipality=tirane&limit=5"
 ```
 
 Expected: `ok: true` and `items` non-empty after you run the Tirane scraper.
+
+## Municipality key aliases and normalization
+
+Run the key-alias migration to preserve old municipality slugs:
+
+```powershell
+Get-Content -Raw -Encoding UTF8 .\014_municipality_key_aliases.sql | docker exec -i tra_postgres psql -U tra -d tra -v ON_ERROR_STOP=1
+```
+
+Audit mojibake candidates (looks for `Ã`/`Â` in `name_sq`, or `[a-z]-[a-z]` in `name_key`):
+
+```bash
+cd backend
+npm run audit:municipality-keys
+```
+
+After you correct `municipalities.name_sq`, use the commented SQL block in `014_municipality_key_aliases.sql` to regenerate clean `name_key` values while preserving legacy keys in `municipality_key_aliases`.
 
 ## Security checks
 

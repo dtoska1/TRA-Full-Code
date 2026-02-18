@@ -11,7 +11,8 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "sanity:registry": "node scripts/sanity_registry.js",
     "debug:registry": "node scripts/debug_fetch_registry.js",
-    "smoke:vendime": "node scripts/smoke_scrape_vendime.js"
+    "smoke:vendime": "node scripts/smoke_scrape_vendime.js",
+    "audit:municipality-keys": "node scripts/audit_municipality_keys.js"
   },
   "keywords": [],
   "author": "",
