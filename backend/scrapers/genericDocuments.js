@@ -474,10 +474,26 @@ async function fetchHtml(url, options = {}) {
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     };
     if (res.status === 406) {
-      res = await fetchWithTimeoutAndConnectRetry(targetUrl, {
-        headers: headersB,
-        redirect: "follow",
-      });
+      const controller2 = new AbortController();
+      const timer2 = setTimeout(() => controller2.abort(), timeoutMs);
+      try {
+        res = await fetchWithTimeoutAndConnectRetry(targetUrl, {
+          headers: headersB,
+          redirect: "follow",
+          signal: controller2.signal,
+        });
+      } catch (err) {
+        if (err?.name === "AbortError") {
+          const timeoutErr = new Error(`Request timed out after ${timeoutMs}ms: ${targetUrl}`);
+          timeoutErr.code = "TIMEOUT";
+          timeoutErr.last_error_type = "TIMEOUT";
+          timeoutErr.final_url = targetUrl;
+          throw timeoutErr;
+        }
+        throw err;
+      } finally {
+        clearTimeout(timer2);
+      }
     }
   }
 
