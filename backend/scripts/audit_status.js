@@ -3,6 +3,7 @@
 const fs = require("fs");
 const path = require("path");
 const { Pool } = require("pg");
+const { fetchVendimeStatusSummary } = require("../lib/vendimeStatus");
 
 require("dotenv").config({
   path: process.env.DOTENV_CONFIG_PATH || path.join(__dirname, "..", ".env"),
@@ -17,35 +18,6 @@ if (!DATABASE_URL) {
 
 const BEGIN_MARKER = "<!-- BEGIN AUTO-GENERATED STATUS -->";
 const END_MARKER = "<!-- END AUTO-GENERATED STATUS -->";
-const DOWN_ERROR_TYPES = new Set([
-  "UPSTREAM_DOWN",
-  "ENOTFOUND",
-  "EAI_AGAIN",
-  "ECONNREFUSED",
-  "ECONNRESET",
-  "ETIMEDOUT",
-  "UND_ERR_CONNECT_TIMEOUT",
-]);
-
-function norm(v) {
-  return String(v || "").trim().toUpperCase();
-}
-
-function isMissingUrl(v) {
-  return !String(v || "").trim();
-}
-
-function classify(row) {
-  const homepageStatus = norm(row.homepage_status);
-  const lastErrorType = norm(row.last_error_type);
-
-  if (homepageStatus === "BLOCKED" || lastErrorType === "HTTP_403") return "BLOCKED";
-  if (homepageStatus === "DOWN" || DOWN_ERROR_TYPES.has(lastErrorType)) return "DOWN";
-  if (homepageStatus === "ERROR" || lastErrorType === "TIMEOUT") return "ERROR";
-  if (isMissingUrl(row.vendime_url)) return "UNKNOWN";
-  return "OK";
-}
-
 function formatTs(value) {
   if (!value) return "-";
   const d = value instanceof Date ? value : new Date(value);
@@ -53,14 +25,15 @@ function formatTs(value) {
   return d.toISOString();
 }
 
-function buildGeneratedContent(rows, counts, generatedAtUtc) {
-  const blocked = rows.filter((r) => r.status === "BLOCKED");
-  const down = rows.filter((r) => r.status === "DOWN");
+function buildGeneratedContent(summary) {
+  const blocked = summary.blocked;
+  const down = summary.down;
+  const counts = summary.counts;
 
   const lines = [];
   lines.push("## Automated status (generated)");
   lines.push(BEGIN_MARKER);
-  lines.push(`Generated at (UTC): ${generatedAtUtc}`);
+  lines.push(`Generated at (UTC): ${summary.generated_at_utc}`);
   lines.push("");
   lines.push("Counts:");
   lines.push(`- OK: ${counts.OK}`);
@@ -76,7 +49,7 @@ function buildGeneratedContent(rows, counts, generatedAtUtc) {
   } else {
     for (const r of blocked) {
       lines.push(
-        `- ${r.name_key} | url: ${r.vendime_url || "-"} | cooldown_until_utc: ${formatTs(
+        `- ${r.name_key} | url: ${r.url || "-"} | cooldown_until_utc: ${formatTs(
           r.cooldown_until_utc
         )}`
       );
@@ -90,7 +63,7 @@ function buildGeneratedContent(rows, counts, generatedAtUtc) {
       lines.push(
         `- ${r.name_key} | last_error_type: ${r.last_error_type || "-"} | homepage_status: ${
           r.homepage_status || "-"
-        } | url: ${r.vendime_url || "-"}`
+        } | url: ${r.url || "-"}`
       );
     }
   }
@@ -126,48 +99,14 @@ async function main() {
   const pool = new Pool({ connectionString: DATABASE_URL });
 
   try {
-    const query = `
-      SELECT
-        m.name_key,
-        sr.vendime_url,
-        sr.homepage_status,
-        sr.last_error_type,
-        sr.last_checked_utc,
-        sr.cooldown_until_utc,
-        sr.feasibility
-      FROM municipalities m
-      LEFT JOIN LATERAL (
-        SELECT
-          vendime_url,
-          homepage_status,
-          last_error_type,
-          last_checked_utc,
-          cooldown_until_utc,
-          feasibility
-        FROM source_registry sr
-        WHERE sr.municipality_id = m.id
-          AND sr.is_primary = TRUE
-        ORDER BY sr.updated_at DESC
-        LIMIT 1
-      ) sr ON TRUE
-      ORDER BY m.name_key ASC;
-    `;
-
-    const result = await pool.query(query);
-    const rows = result.rows.map((row) => ({
-      ...row,
-      status: classify(row),
-    }));
-
-    const counts = { OK: 0, BLOCKED: 0, DOWN: 0, ERROR: 0, UNKNOWN: 0 };
-    for (const row of rows) counts[row.status] += 1;
-
-    const blocked = rows.filter((r) => r.status === "BLOCKED");
     const generatedAtUtc = new Date().toISOString();
+    const summary = await fetchVendimeStatusSummary(pool, generatedAtUtc);
+    const counts = summary.counts;
+    const blocked = summary.blocked;
 
     console.log("Vendime source status summary");
-    console.log(`Generated at (UTC): ${generatedAtUtc}`);
-    console.log(`Total municipalities: ${rows.length}`);
+    console.log(`Generated at (UTC): ${summary.generated_at_utc}`);
+    console.log(`Total municipalities: ${summary.total}`);
     console.log(`OK: ${counts.OK}`);
     console.log(`BLOCKED: ${counts.BLOCKED}`);
     console.log(`DOWN: ${counts.DOWN}`);
@@ -180,14 +119,14 @@ async function main() {
     } else {
       for (const row of blocked) {
         console.log(
-          `- ${row.name_key} | ${row.vendime_url || "-"} | cooldown_until_utc=${formatTs(
+          `- ${row.name_key} | ${row.url || "-"} | cooldown_until_utc=${formatTs(
             row.cooldown_until_utc
           )}`
         );
       }
     }
 
-    const generatedBlock = buildGeneratedContent(rows, counts, generatedAtUtc);
+    const generatedBlock = buildGeneratedContent(summary);
 
     const statusPath = path.join(__dirname, "..", "..", "docs", "STATUS.md");
     const existing = fs.existsSync(statusPath) ? fs.readFileSync(statusPath, "utf8") : "";

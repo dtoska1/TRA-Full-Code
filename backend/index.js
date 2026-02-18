@@ -13,6 +13,7 @@ const rateLimit = require("express-rate-limit");
 const { Pool } = require("pg");
 const dns = require("dns");
 const net = require("net");
+const { fetchVendimeStatusSummary } = require("./lib/vendimeStatus");
 
 // Make Node prefer IPv4 first (helps on some Windows setups)
 dns.setDefaultResultOrder("ipv4first");
@@ -515,6 +516,19 @@ app.get("/api/municipalities", async (req, res) => {
       total: r.rowCount,
       items: r.rows,
     });
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      error: "db_error",
+      message: safePublicErrorMessage(err, "Database operation failed"),
+    });
+  }
+});
+
+app.get("/api/status/vendime", async (req, res) => {
+  try {
+    const summary = await fetchVendimeStatusSummary(pool);
+    res.json(summary);
   } catch (err) {
     res.status(500).json({
       ok: false,
