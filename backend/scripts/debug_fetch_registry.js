@@ -4,6 +4,11 @@ require("dotenv").config();
 const cheerio = require("cheerio");
 const { Pool } = require("pg");
 
+const HTTP_403_COOLDOWN_MINUTES = (() => {
+  const raw = Number.parseInt(String(process.env.HTTP_403_COOLDOWN_MINUTES || ""), 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 10080;
+})();
+
 function parseArgs(argv) {
   const out = {};
   for (const arg of argv.slice(2)) {
@@ -23,6 +28,10 @@ function usageAndExit(message) {
 
 function normalizeCategory(value) {
   return String(value || "Vendime").trim();
+}
+
+function isCloudflareChallengeUrl(url) {
+  return String(url || "").toLowerCase().includes("__cf_chl");
 }
 
 async function fetchHtmlLikeScraper(url) {
@@ -48,7 +57,7 @@ async function fetchHtmlLikeScraper(url) {
 
   const arrayBuffer = await res.arrayBuffer();
   const html = Buffer.from(arrayBuffer).toString("utf8");
-  return { res, html };
+  return { res, html, finalUrl: String(res.url || url) };
 }
 
 async function main() {
@@ -106,13 +115,38 @@ async function main() {
       process.exit(1);
     }
 
-    const { res, html } = await fetchHtmlLikeScraper(targetUrl);
+    const { res, html, finalUrl } = await fetchHtmlLikeScraper(targetUrl);
 
     console.log("\nFetch result:");
     console.log(`  status: ${res.status} ${res.statusText}`);
-    console.log(`  final_url: ${res.url}`);
+    console.log(`  final_url: ${finalUrl}`);
     console.log(`  content_type: ${res.headers.get("content-type") || "<missing>"}`);
     console.log(`  html_length: ${html.length}`);
+
+    if (isCloudflareChallengeUrl(finalUrl)) {
+      const blockUpdate = await pool.query(
+        `
+        UPDATE source_registry
+        SET
+          last_error_type = 'HTTP_403',
+          homepage_status = 'BLOCKED',
+          feasibility = 'C',
+          cooldown_until_utc = now() + make_interval(mins => $2::int),
+          final_url = $3
+        WHERE id = $1
+        RETURNING cooldown_until_utc
+        `,
+        [row.source_registry_id, HTTP_403_COOLDOWN_MINUTES, finalUrl]
+      );
+
+      console.log("\nCloudflare-style challenge detected (__cf_chl).");
+      console.log("Classified source_registry as BLOCKED/HTTP_403 (feasibility C).");
+      console.log(`Cooldown minutes: ${HTTP_403_COOLDOWN_MINUTES}`);
+      console.log(
+        `Cooldown until: ${blockUpdate.rows?.[0]?.cooldown_until_utc || "<unknown>"}`
+      );
+      return;
+    }
 
     const $ = cheerio.load(html);
     const links = [];

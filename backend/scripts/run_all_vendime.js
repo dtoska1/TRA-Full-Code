@@ -131,7 +131,11 @@ async function main() {
 
     let skipReason = '';
     if (!vendimeUrl) skipReason = 'config_missing_url';
-    else if (cooldown && cooldown > now) skipReason = 'cooldown';
+    else if (cooldown && cooldown > now && String(r.last_error_type || '').toUpperCase() === 'HTTP_403') {
+      skipReason = 'blocked_http_403_cooldown';
+    } else if (cooldown && cooldown > now) {
+      skipReason = 'cooldown';
+    }
     else if (!includeHardBlocks && r.last_error_type && hardBlockSet.has(r.last_error_type)) skipReason = `hard_block:${r.last_error_type}`;
 
     return {
@@ -233,10 +237,12 @@ async function main() {
 
   // Add skipped entries to results list for completeness
   for (const j of skipped) {
+    const blockedBy403 =
+      j.skipReason === 'blocked_http_403_cooldown';
     results.push({
       municipality: j.municipality_name,
       municipality_id: j.municipality_id,
-      status: `SKIP:${j.skipReason}`,
+      status: blockedBy403 ? 'SKIP:BLOCKED/HTTP_403' : `SKIP:${j.skipReason}`,
       parsed_rows_total: null,
       parsed_rows_kept: null,
       inserted: null,

@@ -1,6 +1,11 @@
 // backend/scrapers/genericDocuments.js
 const cheerio = require("cheerio");
 
+const HTTP_403_COOLDOWN_MINUTES = (() => {
+  const raw = Number.parseInt(String(process.env.HTTP_403_COOLDOWN_MINUTES || ""), 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 10080;
+})();
+
 function normalizeTitle(s) {
   return String(s || "")
     .toLowerCase()
@@ -37,6 +42,10 @@ function getHost(url) {
   } catch {
     return "";
   }
+}
+
+function isCloudflareChallengeUrl(url) {
+  return String(url || "").toLowerCase().includes("__cf_chl");
 }
 
 function isProbablySameSite(baseUrl, candidateUrl) {
@@ -435,9 +444,31 @@ async function fetchHtml(url) {
     });
   }
 
-  if (!res.ok) throw new Error(`Fetch failed: ${res.status} ${res.statusText}`);
+  const finalUrl = String(res.url || url);
+  if (isCloudflareChallengeUrl(finalUrl)) {
+    const err = new Error(`Cloudflare challenge detected at ${finalUrl}`);
+    err.code = "HTTP_403";
+    err.last_error_type = "HTTP_403";
+    err.homepage_status = "BLOCKED";
+    err.feasibility = "C";
+    err.cooldown_minutes = HTTP_403_COOLDOWN_MINUTES;
+    err.final_url = finalUrl;
+    throw err;
+  }
+
+  if (!res.ok) {
+    const err = new Error(`Fetch failed: ${res.status} ${res.statusText}`);
+    err.code = `HTTP_${res.status}`;
+    err.final_url = finalUrl;
+    throw err;
+  }
+
   const buf = Buffer.from(await res.arrayBuffer());
-  return buf.toString("utf8");
+  return {
+    html: buf.toString("utf8"),
+    final_url: finalUrl,
+    status: res.status,
+  };
 }
 
 
@@ -451,7 +482,8 @@ async function scrapeGenericDocuments({ url, limit = 50 }) {
   let pageUrl = url;
 
   for (let page = 1; page <= maxListingPages; page++) {
-    const listingHtml = await fetchHtml(pageUrl);
+    const listingFetch = await fetchHtml(pageUrl);
+    const listingHtml = listingFetch.html;
 
     // A) docs directly on listing
     const direct = extractDocLinksFromHtml({ baseUrl: pageUrl, html: listingHtml });
@@ -480,7 +512,8 @@ async function scrapeGenericDocuments({ url, limit = 50 }) {
 
         let postHtml;
         try {
-          postHtml = await fetchHtml(postUrl);
+          const postFetch = await fetchHtml(postUrl);
+          postHtml = postFetch.html;
         } catch {
           continue;
         }

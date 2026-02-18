@@ -71,6 +71,8 @@ function extractScrapedFrom(data) {
 
 function classifyOutcome(result) {
   if (result.bucket === "fetch_failed_or_http_error") return result.bucket;
+  if (result.bucket === "blocked_http_403") return result.bucket;
+  if (result.bucket === "skipped_cooldown") return result.bucket;
 
   if (result.ok === true) {
     return result.kept > 0 ? "success_kept_gt_0" : "ok_but_zero_kept";
@@ -78,6 +80,7 @@ function classifyOutcome(result) {
 
   const t = String(result.last_error_type || "").toUpperCase();
   if (t === "CONFIG_MISSING_URL") return "config_missing_url";
+  if (t === "HTTP_403") return "blocked_http_403";
   if (t.includes("FETCH") || t.includes("HTTP")) return "fetch_failed_or_http_error";
   return "other_error";
 }
@@ -149,9 +152,29 @@ async function main() {
       success_kept_gt_0: 0,
       ok_but_zero_kept: 0,
       config_missing_url: 0,
+      blocked_http_403: 0,
+      skipped_cooldown: 0,
       fetch_failed_or_http_error: 0,
       other_error: 0,
     };
+
+    const regResult = await pool.query(
+      `
+      SELECT m.name_key, sr.last_error_type, sr.cooldown_until_utc
+      FROM municipalities m
+      JOIN source_registry sr ON sr.municipality_id = m.id
+      WHERE sr.is_primary = TRUE
+      `
+    );
+    const regByKey = new Map(
+      regResult.rows.map((r) => [
+        String(r.name_key),
+        {
+          last_error_type: String(r.last_error_type || ""),
+          cooldown_until_utc: r.cooldown_until_utc ? new Date(r.cooldown_until_utc) : null,
+        },
+      ])
+    );
 
     for (const nameKey of selected) {
       const url = new URL(`${apiBase}/api/scrape/run`);
@@ -168,14 +191,47 @@ async function main() {
         last_error_type: "-",
         scraped_from: "-",
         bucket: "other_error",
+        note: "",
       };
+
+      const reg = regByKey.get(nameKey);
+      const cooldownUntil = reg?.cooldown_until_utc || null;
+      const inCooldown = cooldownUntil && cooldownUntil > new Date();
+      const blocked403 = String(reg?.last_error_type || "").toUpperCase() === "HTTP_403";
+      if (inCooldown && blocked403) {
+        line.bucket = "blocked_http_403";
+        line.last_error_type = "HTTP_403";
+        line.note = `SKIP cooldown until ${cooldownUntil.toISOString()}`;
+        summary[line.bucket] += 1;
+        console.log(
+          `${line.name_key} | BLOCKED/HTTP_403 | ${line.note}`
+        );
+        continue;
+      }
+      if (inCooldown) {
+        line.bucket = "skipped_cooldown";
+        line.last_error_type = String(reg?.last_error_type || "cooldown");
+        line.note = `SKIP cooldown until ${cooldownUntil.toISOString()}`;
+        summary[line.bucket] += 1;
+        console.log(
+          `${line.name_key} | SKIP:cooldown | ${line.last_error_type} | ${line.note}`
+        );
+        continue;
+      }
 
       try {
         const response = await postJson(url.toString());
 
         if (!response.okHttp) {
-          line.bucket = "fetch_failed_or_http_error";
           line.last_error_type = extractErrorType(response.data);
+          line.bucket = classifyOutcome(line);
+          if (
+            response.status === 429 &&
+            String(line.last_error_type || "").toUpperCase() === "HTTP_403"
+          ) {
+            line.bucket = "blocked_http_403";
+            line.note = `SKIP cooldown until ${response.data?.cooldown_until_utc || "<unknown>"}`;
+          }
         } else {
           const data = response.data || {};
           line.ok = Boolean(data.ok);
@@ -194,15 +250,21 @@ async function main() {
 
       const errorOut = line.last_error_type || "-";
       const scrapedOut = line.scraped_from || "-";
-      console.log(
-        `${line.name_key} | ${line.ok} | ${line.kept} | ${line.inserted} | ${errorOut} | ${scrapedOut}`
-      );
+      if (line.bucket === "blocked_http_403") {
+        console.log(`${line.name_key} | BLOCKED/HTTP_403 | ${line.note || "-"}`);
+      } else {
+        console.log(
+          `${line.name_key} | ${line.ok} | ${line.kept} | ${line.inserted} | ${errorOut} | ${scrapedOut}`
+        );
+      }
     }
 
     console.log("\nSummary:");
     console.log(`success_kept_gt_0: ${summary.success_kept_gt_0}`);
     console.log(`ok_but_zero_kept: ${summary.ok_but_zero_kept}`);
     console.log(`config_missing_url: ${summary.config_missing_url}`);
+    console.log(`blocked_http_403: ${summary.blocked_http_403}`);
+    console.log(`skipped_cooldown: ${summary.skipped_cooldown}`);
     console.log(`fetch_failed_or_http_error: ${summary.fetch_failed_or_http_error}`);
     console.log(`other_error: ${summary.other_error}`);
   } finally {

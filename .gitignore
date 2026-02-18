@@ -22,6 +22,11 @@ yarn-error.log*
 playwright-report/
 test-results/
 
+# Playwright local profiles/state (may contain session/cookies)
+backend/.pw_state/
+backend/.pw-profile/
+**/storage_state.json
+
 # local junk
 /tatus
 *.tmp

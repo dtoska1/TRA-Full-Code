@@ -25,7 +25,9 @@
     "helmet": "^8.1.0",
     "iconv-lite": "^0.7.2",
     "morgan": "^1.10.1",
-    "pg": "^8.18.0",
-    "playwright": "^1.52.0"
+    "pg": "^8.18.0"
+  },
+  "devDependencies": {
+    "playwright": "^1.58.2"
   }
 }

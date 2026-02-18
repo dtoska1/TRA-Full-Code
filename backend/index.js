@@ -61,6 +61,11 @@ const pool = new Pool({
   options: "-c client_encoding=UTF8 -c statement_timeout=3000",
 });
 
+const HTTP_403_COOLDOWN_MINUTES = (() => {
+  const raw = Number.parseInt(String(process.env.HTTP_403_COOLDOWN_MINUTES || ""), 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 10080;
+})();
+
 pool.on("connect", (client) => {
   client
     .query("SET client_encoding TO 'UTF8'; SET statement_timeout TO '3000ms'")
@@ -940,31 +945,57 @@ app.post("/api/scrape/run", async (req, res) => {
     });
   } catch (err) {
     const causeCode = err?.cause?.code || err?.code || "";
+    const explicitErrorType = String(
+      err?.last_error_type || err?.code || ""
+    ).toUpperCase();
     let errorType = "SCRAPE_ERROR";
 
-    if (causeCode === "CERT_HAS_EXPIRED") errorType = "TLS_CERT_EXPIRED";
-    else if (causeCode === "DEPTH_ZERO_SELF_SIGNED_CERT") errorType = "TLS_SELF_SIGNED";
-    else if (causeCode === "UNABLE_TO_VERIFY_LEAF_SIGNATURE") errorType = "TLS_UNVERIFIED_CHAIN";
+    if (/^HTTP_\d{3}$/.test(explicitErrorType)) {
+      errorType = explicitErrorType;
+    } else if (causeCode === "CERT_HAS_EXPIRED") {
+      errorType = "TLS_CERT_EXPIRED";
+    } else if (causeCode === "DEPTH_ZERO_SELF_SIGNED_CERT") {
+      errorType = "TLS_SELF_SIGNED";
+    } else if (causeCode === "UNABLE_TO_VERIFY_LEAF_SIGNATURE") {
+      errorType = "TLS_UNVERIFIED_CHAIN";
+    }
+
+    const cooldownMinutes = Number(
+      err?.cooldown_minutes || (errorType === "HTTP_403" ? HTTP_403_COOLDOWN_MINUTES : 30)
+    );
+    const safeCooldownMinutes = Number.isFinite(cooldownMinutes)
+      ? cooldownMinutes
+      : 30;
+    const finalUrlOnError = String(err?.final_url || "").trim() || null;
+    let updatedState = null;
 
     if (registryRow?.id) {
-      await pool.query(
+      const updated = await pool.query(
         `
         UPDATE source_registry
         SET
           last_error_type = $2,
-          cooldown_until_utc = now() + interval '30 minutes'
+          cooldown_until_utc = now() + make_interval(mins => $3::int),
+          homepage_status = CASE WHEN $2 = 'HTTP_403' THEN 'BLOCKED' ELSE homepage_status END,
+          feasibility = CASE WHEN $2 = 'HTTP_403' THEN 'C' ELSE feasibility END,
+          final_url = COALESCE($4, final_url)
         WHERE id = $1
+        RETURNING cooldown_until_utc, homepage_status, feasibility
         `,
-        [registryRow.id, errorType]
+        [registryRow.id, errorType, safeCooldownMinutes, finalUrlOnError]
       );
+      updatedState = updated.rows[0] || null;
     }
 
-    return res.status(502).json({
+    return res.status(errorType === "HTTP_403" ? 403 : 502).json({
       ok: false,
       error: "scrape_error",
       message: String(err?.message || err),
       cause: causeCode || null,
       last_error_type: errorType,
+      homepage_status: updatedState?.homepage_status || null,
+      feasibility: updatedState?.feasibility || null,
+      cooldown_until_utc: updatedState?.cooldown_until_utc || null,
     });
   }
 });
