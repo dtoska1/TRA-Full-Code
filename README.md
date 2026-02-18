@@ -89,6 +89,25 @@ Health check:
 
 - `http://localhost:5050/health`
 
+### 6.1) Run the frontend status page
+
+From repo root:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open:
+
+- `http://localhost:3000/status`
+
+Frontend env:
+
+- Copy `frontend/.env.example` to `frontend/.env.local` (optional for local dev).
+- Default API base is `http://localhost:5050` via `NEXT_PUBLIC_API_BASE_URL`.
+
 ### 7) Verify health/readiness checks
 
 With backend running (`cd backend && npm run dev`), verify all dependencies:
