@@ -1,5 +1,9 @@
 // backend/index.js
-require("dotenv").config();
+const path = require("path");
+
+require("dotenv").config({
+  path: process.env.DOTENV_CONFIG_PATH || path.join(__dirname, ".env"),
+});
 
 const express = require("express");
 const cors = require("cors");
@@ -60,6 +64,13 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   options: "-c client_encoding=UTF8 -c statement_timeout=3000",
 });
+
+if (!String(process.env.DATABASE_URL || "").trim()) {
+  console.error(
+    "Missing required env var DATABASE_URL. Expected it in backend/.env or DOTENV_CONFIG_PATH."
+  );
+  process.exit(1);
+}
 
 const HTTP_403_COOLDOWN_MINUTES = (() => {
   const raw = Number.parseInt(String(process.env.HTTP_403_COOLDOWN_MINUTES || ""), 10);
