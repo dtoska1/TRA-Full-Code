@@ -273,6 +273,34 @@ node scripts/smoke_scrape_vendime.js --only=mat --limitMunicipalities=1 --shuffl
 
 Expected: output line for `mat` with `parsed_rows_kept > 0` (reported as the third numeric field).
 
+### 10) Run all 61 Vendime ingestions safely (resumable)
+
+Batch script (sequential, with guardrails + progress file):
+
+- Script: `backend/scripts/run_all_vendime_batch.js`
+- Progress file: `backend/tmp/run_all_vendime_progress.json`
+- Defaults: `--year=2024 --limit=50 --batch=10 --sleep_ms=800 --resume=true --stop_on_error=true`
+
+PowerShell example (from repo root):
+
+```powershell
+$env:ADMIN_TOKEN = "<ADMIN_TOKEN>"
+node backend/scripts/run_all_vendime_batch.js --year=2024 --limit=10 --batch=5
+```
+
+Resume behavior:
+
+- If a municipality is already `ok` in progress for the same `year+limit`, it is skipped.
+- If a municipality is `error`, it is retried on the next run.
+- Set `--resume=false` to ignore previous progress and run all municipalities again.
+- If `--stop_on_error=true`, the script stops immediately on first failure and keeps progress on disk.
+
+Manual localhost test with `curl.exe`:
+
+```powershell
+curl.exe -X POST "http://localhost:5050/api/scrape/run?municipality=belsh&category=Vendime&year=2024&limit=10" -H "Authorization: Bearer <ADMIN_TOKEN>" -H "Accept: application/json"
+```
+
 ## Next “must do” items for a public-ready v1
 
 - Make ingestion robust across municipalities (Playwright-first, retries, cooldowns).
