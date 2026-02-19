@@ -21,6 +21,7 @@ dns.setDefaultResultOrder("ipv4first");
 // Scrapers
 const { scrapeTiranaVendime } = require("./scrapers/tiranaVendime");
 const { scrapeGenericDocuments } = require("./scrapers/genericDocuments");
+const { scrapeVendimeAl } = require("./scrapers/vendimeAl");
 
 console.log("LOADED INDEX.JS FROM:", __filename);
 
@@ -809,6 +810,8 @@ app.post("/api/scrape/tirana/vendime", async (req, res) => {
     for (const it of result.items) {
       const sourceUrl = makeAbsoluteUrl(result.url, it.source_url);
       if (!sourceUrl) { skipped++; continue; }
+      const sourcePageUrl = makeAbsoluteUrl(result.url, it.source_page_url || result.url);
+      const sourceOrigin = getHost(sourcePageUrl || sourceUrl) || null;
 
       const safeDate = sanitizeISODate(it.published_date || null);
       const dateUnknown = safeDate ? false : true;
@@ -820,7 +823,7 @@ app.post("/api/scrape/tirana/vendime", async (req, res) => {
           municipality_id, category,
           title, title_normalized, summary,
           published_date, date_unknown, date_source,
-          source_url, source_url_missing_reason,
+          source_url, source_page_url, source_origin, source_url_missing_reason,
           collected_at, ingestion_method,
           dedup_key, possible_duplicate,
           status, created_by_user_id
@@ -829,10 +832,10 @@ app.post("/api/scrape/tirana/vendime", async (req, res) => {
           $1, $2,
           $3, $4, NULL,
           $5::date, $6, 'tirana_al_table',
-          $7, NULL,
+          $7, $8, $9, NULL,
           now(), 'scrape',
-          $8, false,
-          'draft', $9
+          $10, false,
+          'draft', $11
         )
         ON CONFLICT (source_url) WHERE source_url IS NOT NULL
         DO NOTHING
@@ -846,6 +849,8 @@ app.post("/api/scrape/tirana/vendime", async (req, res) => {
           safeDate,
           dateUnknown,
           sourceUrl,
+          sourcePageUrl,
+          sourceOrigin,
           dedupKey,
           systemUserId,
         ]
@@ -995,7 +1000,11 @@ app.post("/api/scrape/run", async (req, res) => {
         let scrapedItems = [];
 
         const host = getHost(targetUrl);
-        if (host.endsWith("tirana.al")) {
+        if (host === "vendime.al" || host === "www.vendime.al") {
+          const r = await scrapeVendimeAl({ url: targetUrl, year, limit });
+          usedUrl = r.url;
+          scrapedItems = r.items;
+        } else if (host.endsWith("tirana.al")) {
           const r = await scrapeTiranaVendime({ year, limit, urlOverride: targetUrl });
           usedUrl = r.url;
           scrapedItems = r.items;
@@ -1026,6 +1035,9 @@ app.post("/api/scrape/run", async (req, res) => {
           const published_date = sanitizeISODate(published_date_raw);
 
           const sourceUrl = makeAbsoluteUrl(usedUrl || targetUrl, it.source_url);
+          const sourcePageUrl = makeAbsoluteUrl(usedUrl || targetUrl, it.source_page_url || usedUrl || targetUrl);
+          const sourceOrigin =
+            String(it.source_origin || "").trim() || getHost(sourcePageUrl || sourceUrl) || null;
           if (!sourceUrl) {
             skipped++;
             skipped_missing_url++;
@@ -1051,7 +1063,7 @@ app.post("/api/scrape/run", async (req, res) => {
               municipality_id, category,
               title, title_normalized, summary,
               published_date, date_unknown, date_source,
-              source_url, source_url_missing_reason,
+              source_url, source_page_url, source_origin, source_url_missing_reason,
               collected_at, ingestion_method,
               dedup_key, possible_duplicate,
               status, created_by_user_id
@@ -1060,10 +1072,10 @@ app.post("/api/scrape/run", async (req, res) => {
               $1, $2,
               $3, $4, NULL,
               $5::date, $6, 'scrape_registry',
-              $7, NULL,
+              $7, $8, $9, NULL,
               now(), 'scrape',
-              $8, false,
-              $9, $10
+              $10, false,
+              $11, $12
             )
             ON CONFLICT (source_url) WHERE source_url IS NOT NULL
             DO NOTHING
@@ -1077,6 +1089,8 @@ app.post("/api/scrape/run", async (req, res) => {
               published_date,
               dateUnknown,
               sourceUrl,
+              sourcePageUrl,
+              sourceOrigin,
               dedupKey,
               defaultStatus,
               systemUserId,

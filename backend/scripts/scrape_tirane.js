@@ -21,14 +21,17 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function postJsonWithRetry(url, maxAttempts = 2) {
+async function postJsonWithRetry(url, adminToken, maxAttempts = 2) {
   let lastError = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       const res = await fetch(url, {
         method: 'POST',
-        headers: { Accept: 'application/json' },
+        headers: {
+          Accept: 'application/json',
+          Authorization: `Bearer ${adminToken}`,
+        },
       });
 
       const text = await res.text();
@@ -65,6 +68,11 @@ async function main() {
   const args = parseArgs(process.argv);
 
   const base = (args.base || process.env.API_BASE || 'http://localhost:5050').replace(/\/+$/, '');
+  const adminToken = String(process.env.ADMIN_TOKEN || '').trim();
+  if (!adminToken) {
+    console.error('ERROR: ADMIN_TOKEN is not set.');
+    process.exit(1);
+  }
   const year = toInt(args.year, new Date().getFullYear());
   const limit = Math.max(1, Math.min(200, toInt(args.limit, 50)));
   const forcePublish = String(args['force-publish'] || 'true').toLowerCase();
@@ -79,7 +87,7 @@ async function main() {
   console.log(`Running Tirane scrape via: ${url.toString()}`);
 
   try {
-    const data = await postJsonWithRetry(url.toString(), 2);
+    const data = await postJsonWithRetry(url.toString(), adminToken, 2);
     console.log(
       JSON.stringify(
         {
