@@ -172,6 +172,14 @@ Feed filtered by municipality key (example: `tirana`):
 curl.exe "http://localhost:5050/api/feed?municipality=tirane&limit=5"
 ```
 
+Feed filtered by municipality + category (all supported categories):
+
+```powershell
+curl.exe "http://localhost:5050/api/feed?municipality=tirane&category=Vendime&limit=5"
+curl.exe "http://localhost:5050/api/feed?municipality=tirane&category=Prokurime&limit=5"
+curl.exe "http://localhost:5050/api/feed?municipality=tirane&category=Konsultime%20publike&limit=5"
+```
+
 ## Sanity checks (quick)
 
 From repo root (PowerShell):
@@ -300,6 +308,17 @@ Manual localhost test with `curl.exe`:
 ```powershell
 curl.exe -X POST "http://localhost:5050/api/scrape/run?municipality=belsh&category=Vendime&year=2024&limit=10" -H "Authorization: Bearer <ADMIN_TOKEN>" -H "Accept: application/json"
 ```
+
+Additional category smoke tests (`/api/scrape/run`):
+
+```powershell
+curl.exe -X POST "http://localhost:5050/api/scrape/run?municipality=tirane&category=Prokurime&year=2024&limit=10" -H "Authorization: Bearer <ADMIN_TOKEN>" -H "Accept: application/json"
+curl.exe -X POST "http://localhost:5050/api/scrape/run?municipality=tirane&category=Konsultime%20publike&year=2024&limit=10" -H "Authorization: Bearer <ADMIN_TOKEN>" -H "Accept: application/json"
+```
+
+Expected response counters for year-filtered runs:
+- `skipped_missing_date`
+- `skipped_wrong_year`
 
 ## Next “must do” items for a public-ready v1
 

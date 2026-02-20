@@ -13,6 +13,7 @@ const rateLimit = require("express-rate-limit");
 const { Pool } = require("pg");
 const dns = require("dns");
 const net = require("net");
+const crypto = require("crypto");
 const { fetchVendimeStatusSummary } = require("./lib/vendimeStatus");
 
 // Make Node prefer IPv4 first (helps on some Windows setups)
@@ -340,6 +341,42 @@ function parseYear(value, fallback) {
   return n;
 }
 
+function parseOptionalInteger(value) {
+  if (value === undefined || value === null || value === "") return null;
+  const n = Number.parseInt(String(value).trim(), 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+function asEnabledFlag(value) {
+  if (typeof value === "boolean") return value;
+  const s = String(value || "").trim().toLowerCase();
+  return s === "true" || s === "1" || s === "t" || s === "yes" || s === "on";
+}
+
+const SUPPORTED_CATEGORIES = ["Vendime", "Prokurime", "Konsultime publike"];
+
+function resolveSupportedCategory(value, fallback = "Vendime") {
+  const hasExplicitValue =
+    value !== undefined && value !== null && String(value).trim() !== "";
+  if (!hasExplicitValue && (fallback === null || fallback === undefined)) return null;
+  const raw = hasExplicitValue ? String(value) : String(fallback);
+  const cleaned = raw.trim().replace(/^["']|["']$/g, "");
+  const normalized = cleaned.toLowerCase();
+  if (normalized === "vendime") return "Vendime";
+  if (normalized === "prokurime") return "Prokurime";
+  if (normalized === "konsultime publike" || normalized === "konsultime-publike") {
+    return "Konsultime publike";
+  }
+  return null;
+}
+
+function getRegistryUrlColumnForCategory(category) {
+  if (category === "Vendime") return "vendime_url";
+  if (category === "Prokurime") return "prokurime_url";
+  if (category === "Konsultime publike") return "konsultime_url";
+  return null;
+}
+
 function badRequest(res, message) {
   return res.status(400).json({
     ok: false,
@@ -463,6 +500,239 @@ function sanitizeISODate(s) {
   return isValidISODate(s) ? s : null;
 }
 
+function normalizeVendimeNumber(s) {
+  return (
+    String(s || "")
+      .toLowerCase()
+      .normalize("NFKD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z0-9]+/g, "") || "n"
+  );
+}
+
+function vendimeSourceWeight(sourceOrigin) {
+  const host = String(sourceOrigin || "").trim().toLowerCase();
+  return host === "vendime.al" || host === "www.vendime.al" ? 50 : 100;
+}
+
+function dedupKeyVendimeV2({ municipalityId, publishedDate, number, title, titleNormalized }) {
+  const datePart = publishedDate || "unknown";
+  const nrPart = normalizeVendimeNumber(number);
+  const titleNorm = titleNormalized || normalizeTitle(title) || "untitled";
+  const titleHash = crypto.createHash("sha1").update(titleNorm).digest("hex").slice(0, 12);
+  return `vendime|v2|${municipalityId}|${datePart}|nr:${nrPart}|t:${titleHash}`;
+}
+
+async function resolveVendimeDedupKey({
+  municipalityId,
+  publishedDate,
+  number,
+  title,
+  titleNormalized,
+}) {
+  const datedKey = dedupKeyVendimeV2({
+    municipalityId,
+    publishedDate,
+    number,
+    title,
+    titleNormalized,
+  });
+  if (!publishedDate) return datedKey;
+
+  const unknownKey = dedupKeyVendimeV2({
+    municipalityId,
+    publishedDate: null,
+    number,
+    title,
+    titleNormalized,
+  });
+
+  const existing = await pool.query(
+    `
+    SELECT dedup_key
+    FROM items
+    WHERE municipality_id = $1
+      AND category = 'Vendime'
+      AND dedup_key = ANY($2::text[])
+    ORDER BY CASE WHEN dedup_key = $3 THEN 0 ELSE 1 END
+    LIMIT 1
+    `,
+    [municipalityId, [datedKey, unknownKey], datedKey]
+  );
+
+  return existing.rowCount ? existing.rows[0].dedup_key : datedKey;
+}
+
+function dedupKeyRegistryDocumentV1({
+  municipalityId,
+  category,
+  publishedDate,
+  title,
+  titleNormalized,
+  sourceUrl,
+}) {
+  const datePart = publishedDate || "unknown";
+  const categoryPart = String(category || "").toLowerCase().replace(/\s+/g, "-");
+  const titleNorm = titleNormalized || normalizeTitle(title) || "untitled";
+  const titleHash = crypto.createHash("sha1").update(titleNorm).digest("hex").slice(0, 12);
+  const sourceHash = crypto
+    .createHash("sha1")
+    .update(String(sourceUrl || "missing"))
+    .digest("hex")
+    .slice(0, 12);
+  return `registry|v1|${municipalityId}|${categoryPart}|${datePart}|t:${titleHash}|s:${sourceHash}`;
+}
+
+async function upsertRegistryDocumentItem({
+  municipalityId,
+  category,
+  title,
+  titleNormalized,
+  publishedDate,
+  sourceUrl,
+  sourcePageUrl,
+  sourceOrigin,
+  dedupKey,
+  shouldPublish,
+  defaultStatus,
+  systemUserId,
+}) {
+  const dateUnknown = publishedDate ? false : true;
+
+  try {
+    const upsert = await pool.query(
+      `
+      INSERT INTO items (
+        municipality_id, category,
+        title, title_normalized, summary,
+        published_date, date_unknown, date_source,
+        source_url, source_page_url, source_origin, source_url_missing_reason,
+        collected_at, ingestion_method,
+        dedup_key, possible_duplicate,
+        status, created_by_user_id
+      )
+      VALUES (
+        $1, $2,
+        $3, $4, NULL,
+        $5::date, $6, 'scrape_registry',
+        $7, $8, $9, NULL,
+        now(), 'scrape',
+        $10, false,
+        $11, $12
+      )
+      ON CONFLICT (municipality_id, category, dedup_key)
+      DO UPDATE
+      SET
+        title = EXCLUDED.title,
+        title_normalized = EXCLUDED.title_normalized,
+        published_date = CASE
+          WHEN items.published_date IS NULL AND EXCLUDED.published_date IS NOT NULL
+            THEN EXCLUDED.published_date
+          ELSE items.published_date
+        END,
+        date_unknown = CASE
+          WHEN items.published_date IS NULL AND EXCLUDED.published_date IS NOT NULL
+            THEN FALSE
+          ELSE items.date_unknown
+        END,
+        source_url = COALESCE(EXCLUDED.source_url, items.source_url),
+        source_page_url = COALESCE(EXCLUDED.source_page_url, items.source_page_url),
+        source_origin = COALESCE(EXCLUDED.source_origin, items.source_origin),
+        status = CASE WHEN $13::boolean THEN 'published' ELSE items.status END,
+        updated_at = now()
+      WHERE
+        items.title IS DISTINCT FROM EXCLUDED.title
+        OR items.title_normalized IS DISTINCT FROM EXCLUDED.title_normalized
+        OR (items.published_date IS NULL AND EXCLUDED.published_date IS NOT NULL)
+        OR items.source_url IS DISTINCT FROM EXCLUDED.source_url
+        OR items.source_page_url IS DISTINCT FROM EXCLUDED.source_page_url
+        OR items.source_origin IS DISTINCT FROM EXCLUDED.source_origin
+        OR ($13::boolean AND items.status <> 'published')
+      RETURNING (xmax = 0) AS inserted
+      `,
+      [
+        municipalityId,
+        category,
+        title,
+        titleNormalized,
+        publishedDate,
+        dateUnknown,
+        sourceUrl,
+        sourcePageUrl,
+        sourceOrigin,
+        dedupKey,
+        defaultStatus,
+        systemUserId,
+        shouldPublish,
+      ]
+    );
+
+    if (!upsert.rowCount) return "skipped";
+    return upsert.rows[0].inserted ? "inserted" : "updated";
+  } catch (err) {
+    if (err?.code !== "23505") throw err;
+
+    const existing = await pool.query(
+      `
+      SELECT id, published_date
+      FROM items
+      WHERE municipality_id = $1
+        AND category = $2
+        AND source_url = $3
+      LIMIT 1
+      `,
+      [municipalityId, category, sourceUrl]
+    );
+    if (!existing.rowCount) return "skipped";
+
+    const row = existing.rows[0];
+    const mergedDate = row.published_date || publishedDate || null;
+    const mergedDateUnknown = mergedDate ? false : true;
+    const updated = await pool.query(
+      `
+      UPDATE items
+      SET
+        title = COALESCE($2, title),
+        title_normalized = COALESCE($3, title_normalized),
+        published_date = $4::date,
+        date_unknown = $5,
+        source_page_url = COALESCE($6, source_page_url),
+        source_origin = COALESCE($7, source_origin),
+        dedup_key = CASE
+          WHEN dedup_key = $8 THEN dedup_key
+          WHEN EXISTS (
+            SELECT 1
+            FROM items i2
+            WHERE i2.municipality_id = $9
+              AND i2.category = $10
+              AND i2.dedup_key = $8
+              AND i2.id <> $1
+          ) THEN dedup_key
+          ELSE $8
+        END,
+        status = CASE WHEN $11::boolean THEN 'published' ELSE status END,
+        updated_at = now()
+      WHERE id = $1
+      `,
+      [
+        row.id,
+        title,
+        titleNormalized,
+        mergedDate,
+        mergedDateUnknown,
+        sourcePageUrl,
+        sourceOrigin,
+        dedupKey,
+        municipalityId,
+        category,
+        shouldPublish,
+      ]
+    );
+
+    return updated.rowCount ? "updated" : "skipped";
+  }
+}
+
 
 async function getMunicipalityId({ municipality, municipality_id }) {
   if (municipality_id !== undefined && municipality_id !== null && String(municipality_id).trim() !== "") {
@@ -492,6 +762,14 @@ async function getMunicipalityId({ municipality, municipality_id }) {
         [key]
       );
   return r.rowCount ? r.rows[0].id : null;
+}
+
+async function getMunicipalityNameKeyById(municipalityId) {
+  const r = await pool.query(
+    `SELECT lower(name_key) AS name_key FROM municipalities WHERE id = $1 LIMIT 1`,
+    [municipalityId]
+  );
+  return r.rowCount ? r.rows[0].name_key : null;
 }
 
 async function getSystemUserId() {
@@ -540,6 +818,334 @@ function getHost(url) {
     return new URL(url).hostname.toLowerCase();
   } catch {
     return "";
+  }
+}
+
+async function scrapeVendimeTarget({
+  targetUrl,
+  year,
+  limit,
+  municipalityKey = null,
+  pageStart = 1,
+}) {
+  const host = getHost(targetUrl);
+  if (host === "vendime.al" || host === "www.vendime.al") {
+    const r = await scrapeVendimeAl({
+      url: targetUrl,
+      year,
+      limit,
+      expectedMunicipalityKey: municipalityKey,
+      pageStart,
+    });
+    return { usedUrl: r.url, items: r.items, meta: r.meta || null };
+  }
+  if (host.endsWith("tirana.al")) {
+    const r = await scrapeTiranaVendime({ year, limit, urlOverride: targetUrl });
+    return { usedUrl: r.url, items: r.items, meta: null };
+  }
+  const r = await scrapeGenericDocuments({ url: targetUrl, limit });
+  return { usedUrl: r.url, items: r.items, meta: null };
+}
+
+async function upsertVendimeItem({
+  municipalityId,
+  title,
+  titleNormalized,
+  publishedDate,
+  sourceUrl,
+  sourcePageUrl,
+  sourceOrigin,
+  dedupKey,
+  shouldPublish,
+  defaultStatus,
+  systemUserId,
+  sourceKind,
+}) {
+  const dateUnknown = publishedDate ? false : true;
+  const incomingWeight = sourceKind === "official" ? 100 : 50;
+
+  try {
+    const upsert = await pool.query(
+      `
+      INSERT INTO items (
+        municipality_id, category,
+        title, title_normalized, summary,
+        published_date, date_unknown, date_source,
+        source_url, source_page_url, source_origin, source_url_missing_reason,
+        collected_at, ingestion_method,
+        dedup_key, possible_duplicate,
+        status, created_by_user_id
+      )
+      VALUES (
+        $1, 'Vendime',
+        $2, $3, NULL,
+        $4::date, $5, 'scrape_registry',
+        $6, $7, $8, NULL,
+        now(), 'scrape',
+        $9, false,
+        $10, $11
+      )
+      ON CONFLICT (municipality_id, category, dedup_key)
+      DO UPDATE
+      SET
+        title = CASE
+          WHEN $12::int > CASE WHEN lower(COALESCE(items.source_origin, '')) IN ('vendime.al', 'www.vendime.al') THEN 50 ELSE 100 END
+            THEN EXCLUDED.title
+          ELSE items.title
+        END,
+        title_normalized = CASE
+          WHEN $12::int > CASE WHEN lower(COALESCE(items.source_origin, '')) IN ('vendime.al', 'www.vendime.al') THEN 50 ELSE 100 END
+            THEN EXCLUDED.title_normalized
+          ELSE items.title_normalized
+        END,
+        published_date = CASE
+          WHEN items.published_date IS NULL AND EXCLUDED.published_date IS NOT NULL
+            THEN EXCLUDED.published_date
+          WHEN $12::int > CASE WHEN lower(COALESCE(items.source_origin, '')) IN ('vendime.al', 'www.vendime.al') THEN 50 ELSE 100 END
+            THEN COALESCE(EXCLUDED.published_date, items.published_date)
+          ELSE items.published_date
+        END,
+        date_unknown = CASE
+          WHEN items.published_date IS NULL AND EXCLUDED.published_date IS NOT NULL
+            THEN FALSE
+          WHEN $12::int > CASE WHEN lower(COALESCE(items.source_origin, '')) IN ('vendime.al', 'www.vendime.al') THEN 50 ELSE 100 END
+            THEN CASE WHEN COALESCE(EXCLUDED.published_date, items.published_date) IS NULL THEN TRUE ELSE FALSE END
+          ELSE items.date_unknown
+        END,
+        source_url = CASE
+          WHEN $12::int > CASE WHEN lower(COALESCE(items.source_origin, '')) IN ('vendime.al', 'www.vendime.al') THEN 50 ELSE 100 END
+            THEN EXCLUDED.source_url
+          ELSE items.source_url
+        END,
+        source_page_url = CASE
+          WHEN $12::int > CASE WHEN lower(COALESCE(items.source_origin, '')) IN ('vendime.al', 'www.vendime.al') THEN 50 ELSE 100 END
+            THEN EXCLUDED.source_page_url
+          ELSE items.source_page_url
+        END,
+        source_origin = CASE
+          WHEN $12::int > CASE WHEN lower(COALESCE(items.source_origin, '')) IN ('vendime.al', 'www.vendime.al') THEN 50 ELSE 100 END
+            THEN EXCLUDED.source_origin
+          ELSE items.source_origin
+        END,
+        status = CASE WHEN $13::boolean THEN 'published' ELSE items.status END,
+        updated_at = now()
+      WHERE
+        (
+          $12::int > CASE WHEN lower(COALESCE(items.source_origin, '')) IN ('vendime.al', 'www.vendime.al') THEN 50 ELSE 100 END
+          OR (items.published_date IS NULL AND EXCLUDED.published_date IS NOT NULL)
+        )
+        OR ($13::boolean AND items.status <> 'published')
+      RETURNING (xmax = 0) AS inserted
+      `,
+      [
+        municipalityId,
+        title,
+        titleNormalized,
+        publishedDate,
+        dateUnknown,
+        sourceUrl,
+        sourcePageUrl,
+        sourceOrigin,
+        dedupKey,
+        defaultStatus,
+        systemUserId,
+        incomingWeight,
+        shouldPublish,
+      ]
+    );
+
+    if (upsert.rowCount === 0) return "skipped";
+    return upsert.rows[0]?.inserted ? "inserted" : "updated";
+  } catch (err) {
+    // Existing rows may still have legacy dedup keys. If source_url already exists,
+    // reconcile in place instead of failing the whole scrape run.
+    if (err?.code === "23505") {
+      const existingByUrl = await pool.query(
+        `
+        SELECT id, municipality_id, category, dedup_key, published_date, source_origin, status
+        FROM items
+        WHERE source_url = $1
+        LIMIT 1
+        `,
+        [sourceUrl]
+      );
+
+      if (existingByUrl.rowCount === 0) throw err;
+      const row = existingByUrl.rows[0];
+      const sameBucket =
+        String(row.municipality_id) === String(municipalityId) &&
+        String(row.category) === "Vendime";
+      if (!sameBucket) return "skipped";
+
+      const existingWeight = vendimeSourceWeight(row.source_origin);
+      const incomingPreferred = incomingWeight > existingWeight;
+      const betterDate = !row.published_date && !!publishedDate;
+      const needsPublish = shouldPublish && row.status !== "published";
+      const needsDedupUpgrade = String(row.dedup_key || "") !== String(dedupKey || "");
+
+      if (!incomingPreferred && !betterDate && !needsPublish && !needsDedupUpgrade) {
+        return "skipped";
+      }
+
+      const mergedDate = betterDate
+        ? publishedDate
+        : incomingPreferred
+          ? (publishedDate || row.published_date || null)
+          : row.published_date;
+      const mergedDateUnknown = mergedDate ? false : true;
+
+      await pool.query(
+        `
+        UPDATE items
+        SET
+          title = CASE WHEN $2::boolean THEN $3 ELSE title END,
+          title_normalized = CASE WHEN $2::boolean THEN $4 ELSE title_normalized END,
+          published_date = $5::date,
+          date_unknown = $6,
+          source_url = CASE WHEN $2::boolean THEN $7 ELSE source_url END,
+          source_page_url = CASE WHEN $2::boolean THEN $8 ELSE source_page_url END,
+          source_origin = CASE WHEN $2::boolean THEN $9 ELSE source_origin END,
+          dedup_key = CASE
+            WHEN $10::boolean
+             AND NOT EXISTS (
+               SELECT 1
+               FROM items i2
+               WHERE i2.municipality_id = $11
+                 AND i2.category = 'Vendime'
+                 AND i2.dedup_key = $12
+                 AND i2.id <> items.id
+             )
+              THEN $12
+            ELSE dedup_key
+          END,
+          status = CASE WHEN $13::boolean THEN 'published' ELSE status END,
+          updated_at = now()
+        WHERE id = $1
+        `,
+        [
+          row.id,
+          incomingPreferred,
+          title,
+          titleNormalized,
+          mergedDate,
+          mergedDateUnknown,
+          sourceUrl,
+          sourcePageUrl,
+          sourceOrigin,
+          needsDedupUpgrade,
+          municipalityId,
+          dedupKey,
+          shouldPublish,
+        ]
+      );
+
+      return "updated";
+    }
+
+    // Fallback for deployments where unique (municipality_id, category, dedup_key)
+    // was not created yet. Keeps ingestion non-breaking.
+    if (err?.code !== "42P10") throw err;
+
+    const existing = await pool.query(
+      `
+      SELECT id, title, title_normalized, published_date, date_unknown,
+             source_url, source_page_url, source_origin, status
+      FROM items
+      WHERE municipality_id = $1
+        AND category = 'Vendime'
+        AND dedup_key = $2
+      LIMIT 1
+      `,
+      [municipalityId, dedupKey]
+    );
+
+    if (existing.rowCount === 0) {
+      const ins = await pool.query(
+        `
+        INSERT INTO items (
+          municipality_id, category,
+          title, title_normalized, summary,
+          published_date, date_unknown, date_source,
+          source_url, source_page_url, source_origin, source_url_missing_reason,
+          collected_at, ingestion_method,
+          dedup_key, possible_duplicate,
+          status, created_by_user_id
+        )
+        VALUES (
+          $1, 'Vendime',
+          $2, $3, NULL,
+          $4::date, $5, 'scrape_registry',
+          $6, $7, $8, NULL,
+          now(), 'scrape',
+          $9, false,
+          $10, $11
+        )
+        ON CONFLICT (source_url) WHERE source_url IS NOT NULL
+        DO NOTHING
+        RETURNING id
+        `,
+        [
+          municipalityId,
+          title,
+          titleNormalized,
+          publishedDate,
+          dateUnknown,
+          sourceUrl,
+          sourcePageUrl,
+          sourceOrigin,
+          dedupKey,
+          defaultStatus,
+          systemUserId,
+        ]
+      );
+      return ins.rowCount === 1 ? "inserted" : "skipped";
+    }
+
+    const row = existing.rows[0];
+    const existingWeight = vendimeSourceWeight(row.source_origin);
+    const incomingPreferred = incomingWeight > existingWeight;
+    const betterDate = !row.published_date && !!publishedDate;
+    const needsPublish = shouldPublish && row.status !== "published";
+
+    if (!incomingPreferred && !betterDate && !needsPublish) return "skipped";
+
+    const mergedDate = betterDate
+      ? publishedDate
+      : incomingPreferred
+        ? (publishedDate || row.published_date || null)
+        : row.published_date;
+    const mergedDateUnknown = mergedDate ? false : true;
+
+    await pool.query(
+      `
+      UPDATE items
+      SET
+        title = CASE WHEN $2::boolean THEN $3 ELSE title END,
+        title_normalized = CASE WHEN $2::boolean THEN $4 ELSE title_normalized END,
+        published_date = $5::date,
+        date_unknown = $6,
+        source_url = CASE WHEN $2::boolean THEN $7 ELSE source_url END,
+        source_page_url = CASE WHEN $2::boolean THEN $8 ELSE source_page_url END,
+        source_origin = CASE WHEN $2::boolean THEN $9 ELSE source_origin END,
+        status = CASE WHEN $10::boolean THEN 'published' ELSE status END,
+        updated_at = now()
+      WHERE id = $1
+      `,
+      [
+        row.id,
+        incomingPreferred,
+        title,
+        titleNormalized,
+        mergedDate,
+        mergedDateUnknown,
+        sourceUrl,
+        sourcePageUrl,
+        sourceOrigin,
+        shouldPublish,
+      ]
+    );
+
+    return "updated";
   }
 }
 
@@ -695,6 +1301,18 @@ app.get("/api/feed", async (req, res) => {
       }
     }
 
+    const categoryRaw = req.query.category;
+    let category = null;
+    if (categoryRaw !== undefined) {
+      category = resolveSupportedCategory(categoryRaw, null);
+      if (!category) {
+        return badRequest(
+          res,
+          `Invalid category. Allowed values: ${SUPPORTED_CATEGORIES.join(", ")}.`
+        );
+      }
+    }
+
     const offset = (page - 1) * limit;
 
     const params = [];
@@ -729,6 +1347,11 @@ app.get("/api/feed", async (req, res) => {
       }
     }
 
+    if (category) {
+      params.push(category);
+      where.push(`category = $${params.length}`);
+    }
+
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
     const countSql = `
       SELECT COUNT(*)::int AS total
@@ -749,6 +1372,7 @@ app.get("/api/feed", async (req, res) => {
         id,
         municipality AS municipality_name,
         municipality_key AS municipality_name_key,
+        category,
         title,
         source_url,
         published_date AS published_at,
@@ -890,13 +1514,30 @@ app.post("/api/scrape/run", async (req, res) => {
   const municipality = req.query.municipality ? String(req.query.municipality) : null;
   const municipality_id = req.query.municipality_id ? String(req.query.municipality_id) : null;
 
-  const category = req.query.category ? String(req.query.category) : "Vendime";
+  const requestedCategory =
+    req.query.category !== undefined ? String(req.query.category) : "Vendime";
+  const category = resolveSupportedCategory(requestedCategory, "Vendime");
+  if (!category) {
+    return res.status(400).json({
+      ok: false,
+      error: "unsupported_category",
+      message: `Supported categories: ${SUPPORTED_CATEGORIES.join(", ")}`,
+    });
+  }
   const forceRun = String(req.query.force_run || "") === "true";
   const forcePublish =
     ["1", "true", "yes", "on"].includes(
       String(req.query.force_publish || "").trim().toLowerCase()
     );
   const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 50));
+  const pageStart = parsePositiveInt(req.query.page_start, 1);
+  if (pageStart === null) {
+    return badRequest(res, "Invalid page_start. page_start must be an integer >= 1.");
+  }
+  const yearFilterRequested =
+    req.query.year !== undefined &&
+    req.query.year !== null &&
+    String(req.query.year).trim() !== "";
   const year = parseYear(req.query.year, new Date().getUTCFullYear());
   if (year === null) {
     return badRequest(res, "Invalid year. year must be an integer between 2000 and 2100.");
@@ -938,25 +1579,21 @@ app.post("/api/scrape/run", async (req, res) => {
       });
     }
 
-    if (category.toLowerCase() !== "vendime") {
-      return res.status(400).json({
-        ok: false,
-        error: "unsupported_category",
-        message: "Only category=Vendime is supported for now",
-      });
-    }
-
-    let targetUrl = applyYearTemplate(registryRow.vendime_url || null, year);
+    const registryUrlColumn = getRegistryUrlColumnForCategory(category);
+    let baselineTargetUrl = applyYearTemplate(
+      (registryUrlColumn ? registryRow[registryUrlColumn] : null) || null,
+      year
+    );
 
     // fallback only for Tirana if vendime_url missing (debug convenience)
-    if (!targetUrl) {
+    if (category === "Vendime" && !baselineTargetUrl) {
       const tiranaId = await getTiranaId();
       if (tiranaId && municipalityId === tiranaId) {
-        targetUrl = `https://tirana.al/kategoria-e-publikimit/vendime-te-keshillit-bashkiak-${year}-4290`;
+        baselineTargetUrl = `https://tirana.al/kategoria-e-publikimit/vendime-te-keshillit-bashkiak-${year}-4290`;
       }
     }
 
-    if (!targetUrl) {
+    if (!baselineTargetUrl) {
       await pool.query(
         `
         UPDATE source_registry
@@ -969,7 +1606,7 @@ app.post("/api/scrape/run", async (req, res) => {
       return res.status(400).json({
         ok: false,
         error: "missing_target_url",
-        message: "vendime_url is NULL in source_registry (and no fallback available)",
+        message: `${registryUrlColumn || "target_url"} is NULL in source_registry (and no fallback available)`,
         last_error_type: "CONFIG_MISSING_URL",
       });
     }
@@ -992,26 +1629,263 @@ app.post("/api/scrape/run", async (req, res) => {
       [registryRow.id, nextBuckets]
     );
 
+    if (category !== "Vendime") {
+      const successPayload = await withTimeout(
+        (async () => {
+          const systemUserId = await getSystemUserId();
+          const municipalityKey = await getMunicipalityNameKeyById(municipalityId);
+          const baselineResult = await scrapeGenericDocuments({
+            targetUrl: baselineTargetUrl,
+            year,
+            limit,
+            municipalityKey,
+            pageStart,
+            category,
+          });
+          const baselineSummary = {
+            used_url: baselineResult.usedUrl || baselineResult.url || baselineTargetUrl,
+            parsed_rows_total: baselineResult.items.length,
+            kept: 0,
+            inserted: 0,
+            updated: 0,
+            skipped: 0,
+            skipped_missing_date: 0,
+            skipped_wrong_year: 0,
+          };
+
+          const shouldPublish =
+            forcePublish || registryRow.verification_status === "CHECKED";
+          const defaultStatus = shouldPublish ? "published" : "draft";
+
+          let inserted = 0;
+          let updated = 0;
+          let skipped = 0;
+          let skipped_missing_date = 0;
+          let skipped_wrong_year = 0;
+          let skipped_missing_url = 0;
+          let parsed_kept = 0;
+          let sample_kept_title = null;
+          const keptDedupKeys = new Set();
+
+          for (const it of baselineResult.items) {
+            const title = it.title || "";
+            const published_date = sanitizeISODate(it.published_date || null);
+            const itemBaseUrl = baselineSummary.used_url || baselineTargetUrl;
+            const sourceUrl = makeAbsoluteUrl(itemBaseUrl, it.source_url);
+            const sourcePageUrl = makeAbsoluteUrl(itemBaseUrl, it.source_page_url || itemBaseUrl);
+            const sourceOrigin =
+              String(it.source_origin || "").trim() || getHost(sourcePageUrl || sourceUrl) || null;
+
+            if (!sourceUrl) {
+              skipped++;
+              baselineSummary.skipped++;
+              skipped_missing_url++;
+              continue;
+            }
+
+            if (yearFilterRequested) {
+              if (!published_date) {
+                skipped++;
+                baselineSummary.skipped++;
+                baselineSummary.skipped_missing_date++;
+                skipped_missing_date++;
+                continue;
+              }
+              const itemYear = Number.parseInt(String(published_date).slice(0, 4), 10);
+              if (!Number.isFinite(itemYear) || itemYear !== year) {
+                skipped++;
+                baselineSummary.skipped++;
+                baselineSummary.skipped_wrong_year++;
+                skipped_wrong_year++;
+                continue;
+              }
+            }
+
+            parsed_kept++;
+            baselineSummary.kept++;
+            if (!sample_kept_title) sample_kept_title = title;
+            const titleNormalized = it.title_normalized || normalizeTitle(title);
+            const dedupKey = dedupKeyRegistryDocumentV1({
+              municipalityId,
+              category,
+              publishedDate: published_date,
+              title,
+              titleNormalized,
+              sourceUrl,
+            });
+            keptDedupKeys.add(dedupKey);
+
+            const action = await upsertRegistryDocumentItem({
+              municipalityId,
+              category,
+              title,
+              titleNormalized,
+              publishedDate: published_date,
+              sourceUrl,
+              sourcePageUrl,
+              sourceOrigin,
+              dedupKey,
+              shouldPublish,
+              defaultStatus,
+              systemUserId,
+            });
+
+            if (action === "inserted") {
+              inserted++;
+              baselineSummary.inserted++;
+            } else if (action === "updated") {
+              updated++;
+              baselineSummary.updated++;
+            } else {
+              skipped++;
+              baselineSummary.skipped++;
+            }
+          }
+
+          let publishedUpdated = 0;
+          if (shouldPublish && keptDedupKeys.size > 0) {
+            const keptKeys = Array.from(keptDedupKeys);
+            const publishUpdate = await pool.query(
+              `
+              UPDATE items
+              SET status = 'published',
+                  updated_at = now()
+              WHERE municipality_id = $1
+                AND category = $2
+                AND status <> 'published'
+                AND dedup_key = ANY($3::text[])
+              `,
+              [municipalityId, category, keptKeys]
+            );
+            publishedUpdated = publishUpdate.rowCount;
+          }
+
+          await pool.query(
+            `
+            UPDATE source_registry
+            SET
+              last_seen_utc = now(),
+              last_error_type = NULL,
+              cooldown_until_utc = NULL
+            WHERE id = $1
+            `,
+            [registryRow.id]
+          );
+
+          return {
+            ok: true,
+            municipality: municipality || municipalityId,
+            municipality_id: municipalityId,
+            category,
+            used_registry_id: registryRow.id,
+            scraped_from: baselineSummary.used_url || baselineTargetUrl,
+            parsed_rows_total: baselineSummary.parsed_rows_total,
+            parsed_rows_kept: parsed_kept,
+            force_publish: forcePublish,
+            should_publish: shouldPublish,
+            page_start: pageStart,
+            inserted,
+            updated,
+            published_updated: publishedUpdated,
+            skipped,
+            skipped_missing_url,
+            skipped_missing_date,
+            skipped_wrong_year,
+            baseline: baselineSummary,
+            sample_title: sample_kept_title || baselineResult.items[0]?.title || null,
+            next: "Next: verify /api/feed returns this municipality/category.",
+          };
+        })(),
+        SCRAPE_JOB_TIMEOUT_MS,
+        `scrape municipality ${municipalityId} category ${category}`
+      );
+
+      return res.json(successPayload);
+    }
+
+    const officialEnabled = asEnabledFlag(registryRow.vendime_official_enabled);
+    const officialFromYear = parseOptionalInteger(registryRow.vendime_official_from_year);
+    const officialToYear = parseOptionalInteger(registryRow.vendime_official_to_year);
+    const yearWithinOfficialRange =
+      (!officialFromYear || year >= officialFromYear) && (!officialToYear || year <= officialToYear);
+    const officialTemplateUrl = registryRow.vendime_url_official || null;
+    const officialTargetUrl =
+      officialEnabled && yearWithinOfficialRange && officialTemplateUrl
+        ? applyYearTemplate(officialTemplateUrl, year)
+        : null;
+
     const successPayload = await withTimeout(
       (async () => {
-        // scrape
+        // scrape baseline first (required)
         const systemUserId = await getSystemUserId();
-        let usedUrl = targetUrl;
-        let scrapedItems = [];
+        const municipalityKey = await getMunicipalityNameKeyById(municipalityId);
+        const baselineResult = await scrapeVendimeTarget({
+          targetUrl: baselineTargetUrl,
+          year,
+          limit,
+          municipalityKey,
+          pageStart,
+        });
+        const baselineSummary = {
+          used_url: baselineResult.usedUrl || baselineTargetUrl,
+          parsed_rows_total: baselineResult.items.length,
+          kept: 0,
+          inserted: 0,
+          updated: 0,
+          skipped: 0,
+          skipped_missing_date: 0,
+          skipped_wrong_year: 0,
+          skipped_not_municipality: Number(
+            baselineResult.meta?.skipped_not_municipality || 0
+          ),
+        };
+        const officialSummary = {
+          attempted: false,
+          updated_existing: 0,
+          skipped_missing_date: 0,
+          skipped_wrong_year: 0,
+          skipped_not_municipality: 0,
+        };
 
-        const host = getHost(targetUrl);
-        if (host === "vendime.al" || host === "www.vendime.al") {
-          const r = await scrapeVendimeAl({ url: targetUrl, year, limit });
-          usedUrl = r.url;
-          scrapedItems = r.items;
-        } else if (host.endsWith("tirana.al")) {
-          const r = await scrapeTiranaVendime({ year, limit, urlOverride: targetUrl });
-          usedUrl = r.url;
-          scrapedItems = r.items;
-        } else {
-          const r = await scrapeGenericDocuments({ url: targetUrl, limit });
-          usedUrl = r.url;
-          scrapedItems = r.items;
+        const mergedScrapedItems = baselineResult.items.map((it) => ({
+          ...it,
+          source_kind: "baseline",
+          source_base_url: baselineSummary.used_url,
+        }));
+
+        if (officialTargetUrl) {
+          officialSummary.attempted = true;
+          officialSummary.used_url = officialTargetUrl;
+          try {
+            const officialResult = await scrapeVendimeTarget({
+              targetUrl: officialTargetUrl,
+              year,
+              limit,
+              municipalityKey,
+              pageStart,
+            });
+            officialSummary.used_url = officialResult.usedUrl || officialTargetUrl;
+            officialSummary.parsed_rows_total = officialResult.items.length;
+            officialSummary.kept = 0;
+            officialSummary.inserted = 0;
+            officialSummary.updated = 0;
+            officialSummary.skipped = 0;
+            officialSummary.skipped_not_municipality = Number(
+              officialResult.meta?.skipped_not_municipality || 0
+            );
+            mergedScrapedItems.push(
+              ...officialResult.items.map((it) => ({
+                ...it,
+                source_kind: "official",
+                source_base_url: officialSummary.used_url,
+              }))
+            );
+          } catch (officialErr) {
+            officialSummary.error = safePublicErrorMessage(
+              officialErr,
+              "Official vendime scrape failed"
+            );
+          }
         }
 
         // auto-publish if registry already CHECKED, or allow explicit forced publish for one-off runs.
@@ -1021,87 +1895,110 @@ app.post("/api/scrape/run", async (req, res) => {
 
         // insert items
         let inserted = 0;
+        let updated = 0;
         let skipped = 0;
         let skipped_not_vendim = 0;
+        let skipped_not_municipality =
+          Number(baselineSummary.skipped_not_municipality || 0) +
+          Number(officialSummary.skipped_not_municipality || 0);
+        let skipped_missing_date = 0;
+        let skipped_wrong_year = 0;
         let skipped_missing_url = 0;
         let parsed_kept = 0;
         let sample_kept_title = null;
-        const keptUrls = [];
+        const keptDedupKeys = new Set();
+        const keptOfficialSourceUrls = new Set();
         let publishedUpdated = 0;
 
-        for (const it of scrapedItems) {
+        for (const it of mergedScrapedItems) {
+          const sourceKind = it.source_kind === "official" ? "official" : "baseline";
+          const sourceSummary = sourceKind === "official" ? officialSummary : baselineSummary;
           const title = it.title || "";
           const published_date_raw = it.published_date || null;
           const published_date = sanitizeISODate(published_date_raw);
+          const itemBaseUrl = it.source_base_url || baselineSummary.used_url || baselineTargetUrl;
 
-          const sourceUrl = makeAbsoluteUrl(usedUrl || targetUrl, it.source_url);
-          const sourcePageUrl = makeAbsoluteUrl(usedUrl || targetUrl, it.source_page_url || usedUrl || targetUrl);
+          const sourceUrl = makeAbsoluteUrl(itemBaseUrl, it.source_url);
+          const sourcePageUrl = makeAbsoluteUrl(itemBaseUrl, it.source_page_url || itemBaseUrl);
           const sourceOrigin =
             String(it.source_origin || "").trim() || getHost(sourcePageUrl || sourceUrl) || null;
           if (!sourceUrl) {
             skipped++;
+            sourceSummary.skipped = (sourceSummary.skipped || 0) + 1;
             skipped_missing_url++;
             continue;
           }
 
           if (!looksLikeVendim(title, sourceUrl)) {
             skipped++;
+            sourceSummary.skipped = (sourceSummary.skipped || 0) + 1;
             skipped_not_vendim++;
             continue;
           }
 
+          if (yearFilterRequested) {
+            if (!published_date) {
+              skipped++;
+              sourceSummary.skipped = (sourceSummary.skipped || 0) + 1;
+              sourceSummary.skipped_missing_date =
+                (sourceSummary.skipped_missing_date || 0) + 1;
+              skipped_missing_date++;
+              continue;
+            }
+            const itemYear = Number.parseInt(String(published_date).slice(0, 4), 10);
+            if (!Number.isFinite(itemYear) || itemYear !== year) {
+              skipped++;
+              sourceSummary.skipped = (sourceSummary.skipped || 0) + 1;
+              sourceSummary.skipped_wrong_year =
+                (sourceSummary.skipped_wrong_year || 0) + 1;
+              skipped_wrong_year++;
+              continue;
+            }
+          }
+
           parsed_kept++;
+          sourceSummary.kept = (sourceSummary.kept || 0) + 1;
+          if (sourceKind === "official") keptOfficialSourceUrls.add(sourceUrl);
           if (!sample_kept_title) sample_kept_title = title;
-          keptUrls.push(sourceUrl);
+          const titleNormalized = it.title_normalized || normalizeTitle(title);
+          const dedupKey = await resolveVendimeDedupKey({
+            municipalityId,
+            publishedDate: published_date,
+            number: it.number,
+            title,
+            titleNormalized,
+          });
+          keptDedupKeys.add(dedupKey);
 
-          const dateUnknown = published_date ? false : true;
-          const dedupKey = `vendime|${municipalityId}|${it.number || ""}|${sourceUrl || ""}`;
+          const action = await upsertVendimeItem({
+            municipalityId,
+            title,
+            titleNormalized,
+            publishedDate: published_date,
+            sourceUrl,
+            sourcePageUrl,
+            sourceOrigin,
+            dedupKey,
+            shouldPublish,
+            defaultStatus,
+            systemUserId,
+            sourceKind,
+          });
 
-          const ins = await pool.query(
-            `
-            INSERT INTO items (
-              municipality_id, category,
-              title, title_normalized, summary,
-              published_date, date_unknown, date_source,
-              source_url, source_page_url, source_origin, source_url_missing_reason,
-              collected_at, ingestion_method,
-              dedup_key, possible_duplicate,
-              status, created_by_user_id
-            )
-            VALUES (
-              $1, $2,
-              $3, $4, NULL,
-              $5::date, $6, 'scrape_registry',
-              $7, $8, $9, NULL,
-              now(), 'scrape',
-              $10, false,
-              $11, $12
-            )
-            ON CONFLICT (source_url) WHERE source_url IS NOT NULL
-            DO NOTHING
-            RETURNING id
-            `,
-            [
-              municipalityId,
-              "Vendime",
-              title,
-              it.title_normalized || normalizeTitle(title),
-              published_date,
-              dateUnknown,
-              sourceUrl,
-              sourcePageUrl,
-              sourceOrigin,
-              dedupKey,
-              defaultStatus,
-              systemUserId,
-            ]
-          );
-
-          if (ins.rowCount === 1) inserted++;
-          else skipped++;
+          if (action === "inserted") {
+            inserted++;
+            sourceSummary.inserted = (sourceSummary.inserted || 0) + 1;
+          } else if (action === "updated") {
+            updated++;
+            sourceSummary.updated = (sourceSummary.updated || 0) + 1;
+          } else {
+            skipped++;
+            sourceSummary.skipped = (sourceSummary.skipped || 0) + 1;
+          }
         }
 
-        if (shouldPublish && keptUrls.length > 0) {
+        if (shouldPublish && keptDedupKeys.size > 0) {
+          const keptKeys = Array.from(keptDedupKeys);
           const publishUpdate = await pool.query(
             `
             UPDATE items
@@ -1110,11 +2007,80 @@ app.post("/api/scrape/run", async (req, res) => {
             WHERE municipality_id = $1
               AND category = $2
               AND status <> 'published'
-              AND source_url = ANY($3::text[])
+              AND dedup_key = ANY($3::text[])
             `,
-            [municipalityId, "Vendime", keptUrls]
+            [municipalityId, "Vendime", keptKeys]
           );
           publishedUpdated = publishUpdate.rowCount;
+        }
+
+        if (officialSummary.attempted && keptOfficialSourceUrls.size > 0) {
+          const officialSourceUrls = Array.from(keptOfficialSourceUrls);
+          const officialListingUrl = officialSummary.used_url || officialTargetUrl || null;
+          const officialOriginHost =
+            getHost(officialListingUrl || officialTargetUrl || "") || null;
+          try {
+            let updatedExisting = 0;
+
+            // Reconcile exact official URLs first so existing baseline rows inherit official provenance.
+            for (const officialSourceUrl of officialSourceUrls) {
+              const perItemUpdate = await pool.query(
+                `
+                UPDATE items
+                SET
+                  source_origin = COALESCE($3, source_origin),
+                  source_page_url = $4,
+                  status = CASE WHEN $5::boolean THEN 'published' ELSE status END,
+                  updated_at = now()
+                WHERE municipality_id = $1
+                  AND category = 'Vendime'
+                  AND source_url = $2
+                `,
+                [
+                  municipalityId,
+                  officialSourceUrl,
+                  officialOriginHost,
+                  officialListingUrl,
+                  shouldPublish,
+                ]
+              );
+              updatedExisting += perItemUpdate.rowCount;
+            }
+
+            // Fallback for known Tirana 2026 listing if item-level URL matching misses existing rows.
+            if (
+              updatedExisting === 0 &&
+              String(officialListingUrl || "").includes(
+                "vendime-te-keshillit-bashkiak-2026-4290"
+              )
+            ) {
+              const bulkFallback = await pool.query(
+                `
+                UPDATE items
+                SET
+                  source_origin = COALESCE($2, source_origin),
+                  source_page_url = $3,
+                  status = CASE WHEN $4::boolean THEN 'published' ELSE status END,
+                  updated_at = now()
+                WHERE municipality_id = $1
+                  AND category = 'Vendime'
+                  AND source_url LIKE 'https://tirana.al/uploads/2026/%'
+                `,
+                [municipalityId, officialOriginHost, officialListingUrl, shouldPublish]
+              );
+              updatedExisting += bulkFallback.rowCount;
+            }
+
+            officialSummary.updated_existing = updatedExisting;
+          } catch (reconcileErr) {
+            const reconcileMsg = safePublicErrorMessage(
+              reconcileErr,
+              "Official vendime reconciliation failed"
+            );
+            officialSummary.error = officialSummary.error
+              ? `${officialSummary.error}; ${reconcileMsg}`
+              : reconcileMsg;
+          }
         }
 
         // success update
@@ -1130,23 +2096,35 @@ app.post("/api/scrape/run", async (req, res) => {
           [registryRow.id]
         );
 
+        // Smoke test:
+        // 1) apply 017_vendime_official_sources.sql
+        // 2) POST /api/scrape/run?municipality=tirane&category=Vendime&year=2026&limit=80 (Bearer token)
+        // 3) verify response includes baseline+official and no duplicate vendime rows in /api/feed?municipality=tirane
         return {
           ok: true,
           municipality: municipality || municipalityId,
           municipality_id: municipalityId,
           category: "Vendime",
           used_registry_id: registryRow.id,
-          scraped_from: usedUrl || targetUrl,
-          parsed_rows_total: scrapedItems.length,
+          scraped_from: baselineSummary.used_url || baselineTargetUrl,
+          parsed_rows_total:
+            baselineSummary.parsed_rows_total + Number(officialSummary.parsed_rows_total || 0),
           parsed_rows_kept: parsed_kept,
           force_publish: forcePublish,
           should_publish: shouldPublish,
+          page_start: pageStart,
           inserted,
+          updated,
           published_updated: publishedUpdated,
           skipped,
           skipped_missing_url,
+          skipped_missing_date,
+          skipped_wrong_year,
           skipped_not_vendim,
-          sample_title: sample_kept_title || scrapedItems[0]?.title || null,
+          skipped_not_municipality,
+          baseline: baselineSummary,
+          official: officialSummary,
+          sample_title: sample_kept_title || mergedScrapedItems[0]?.title || null,
           next: "Next: run the remaining checked municipalities and confirm parsed_rows_kept > 0.",
         };
       })(),
@@ -1226,7 +2204,7 @@ app.post("/api/scrape/run", async (req, res) => {
       console.warn(
         `[scrape.run] timeout municipality_id=${municipalityId || "unknown"} label=${err?.timeout_label || "scrape job"}`
       );
-    }
+    } 
 
     const statusCode = (() => {
       if (errorType === "HTTP_403") return 502;

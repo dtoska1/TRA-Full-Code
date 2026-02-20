@@ -19,9 +19,12 @@ export default function HomePage() {
           >
             Public Status
           </Link>
-          <span className="inline-flex items-center justify-center rounded-xl border border-slate-300 bg-slate-50 px-5 py-3 text-base font-medium text-slate-600">
-            Feed (coming soon)
-          </span>
+          <Link
+            href="/municipality/tirane?category=Vendime"
+            className="inline-flex items-center justify-center rounded-xl border border-slate-300 bg-slate-50 px-5 py-3 text-base font-medium text-slate-700"
+          >
+            Municipality Feed
+          </Link>
         </div>
       </div>
     </main>

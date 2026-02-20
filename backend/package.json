@@ -12,7 +12,9 @@
     "sanity:registry": "node scripts/sanity_registry.js",
     "debug:registry": "node scripts/debug_fetch_registry.js",
     "smoke:vendime": "node scripts/smoke_scrape_vendime.js",
-    "audit:municipality-keys": "node scripts/audit_municipality_keys.js"
+    "audit:municipality-keys": "node scripts/audit_municipality_keys.js",
+    "discover:vendime": "node scripts/discover_vendime_urls.js",
+    "apply:vendime": "node scripts/apply_vendime_url.js"
   },
   "keywords": [],
   "author": "",
