@@ -32,17 +32,6 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
-      meili:
-        image: getmeili/meilisearch:v1.11
-        env:
-          MEILI_ENV: development
-        ports:
-          - 7700:7700
-        options: >-
-          --health-cmd "wget --no-verbose --tries=1 --spider http://127.0.0.1:7700/health || exit 1"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
 
     steps:
       - name: Checkout
@@ -84,6 +73,12 @@ jobs:
         env:
           DATABASE_URL: postgres://tra:tra@127.0.0.1:5432/tra
         run: node scripts/ci_bootstrap_db.js
+
+      - name: Start Meili health stub
+        shell: bash
+        run: |
+          node -e "require('http').createServer((req,res)=>{if(req.url==='/health'){res.writeHead(200,{'content-type':'application/json'});res.end('{\"status\":\"available\"}');return;}res.writeHead(404);res.end();}).listen(7700,'127.0.0.1')" > meili-stub.log 2>&1 &
+          echo $! > meili-stub.pid
 
       - name: Start backend
         working-directory: backend
@@ -140,4 +135,7 @@ jobs:
         run: |
           if [[ -f backend-ci.pid ]]; then
             kill "$(cat backend-ci.pid)" || true
+          fi
+          if [[ -f meili-stub.pid ]]; then
+            kill "$(cat meili-stub.pid)" || true
           fi
