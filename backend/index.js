@@ -431,6 +431,62 @@ function shouldKeepKonsultimeWithoutYear({ title, sourceUrl }) {
   return KONSULTIME_NO_YEAR_KEEP_RE.test(haystack);
 }
 
+function normalizeHostForCompare(host) {
+  return String(host || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\.$/, "")
+    .replace(/^www\./, "");
+}
+
+function isSameHostForCompare(a, b) {
+  const left = normalizeHostForCompare(a);
+  const right = normalizeHostForCompare(b);
+  return !!left && !!right && left === right;
+}
+
+function isPdfUrl(url) {
+  return /\.pdf(\?|#|$)/i.test(String(url || "").trim());
+}
+
+function evaluateKonsultimeNoYearSourcePolicy({
+  municipalityHost,
+  sourceUrl,
+  sourcePageUrl,
+  itemBaseUrl,
+}) {
+  const sourceHost = getHost(sourceUrl);
+  if (!sourceHost || !municipalityHost) {
+    return {
+      allowed: false,
+      resolvedSourcePageUrl: sourcePageUrl || itemBaseUrl || null,
+    };
+  }
+
+  if (isSameHostForCompare(sourceHost, municipalityHost)) {
+    return {
+      allowed: true,
+      resolvedSourcePageUrl: sourcePageUrl || itemBaseUrl || null,
+    };
+  }
+
+  const referrerHost = getHost(itemBaseUrl || sourcePageUrl);
+  const allowExternalPdf =
+    isPdfUrl(sourceUrl) && isSameHostForCompare(referrerHost, municipalityHost);
+  if (!allowExternalPdf) {
+    return {
+      allowed: false,
+      resolvedSourcePageUrl: sourcePageUrl || itemBaseUrl || null,
+    };
+  }
+
+  return {
+    allowed: true,
+    // Keep municipality page as provenance referrer for allowed external PDFs.
+    resolvedSourcePageUrl: itemBaseUrl || sourcePageUrl || null,
+  };
+}
+
 function toNameKey(s) {
   return String(s || "")
     .normalize("NFD")
@@ -1875,6 +1931,7 @@ app.post("/api/scrape/run", async (req, res) => {
             skipped_missing_date: 0,
             skipped_wrong_year: 0,
             skipped_no_year_keyword: 0,
+            skipped_no_year_source_policy: 0,
           };
           const fallbackSummary = {
             attempted: false,
@@ -1890,12 +1947,18 @@ app.post("/api/scrape/run", async (req, res) => {
             skipped_missing_date: 0,
             skipped_wrong_year: 0,
             skipped_no_year_keyword: 0,
+            skipped_no_year_source_policy: 0,
           };
           const mergedScrapedItems = baselineResult.items.map((it) => ({
             ...it,
             source_kind: "baseline",
             source_base_url: baselineSummary.used_url || baselineTargetUrl,
           }));
+          const municipalityBaseForHost =
+            String(registryRow.final_url || "").trim() ||
+            String(registryRow.base_url || "").trim() ||
+            baselineTargetUrl;
+          const municipalityHost = getHost(municipalityBaseForHost);
 
           if (category === "Konsultime publike") {
             let baselineKeepableCount = 0;
@@ -1913,6 +1976,18 @@ app.post("/api/scrape/run", async (req, res) => {
                 !shouldKeepKonsultimeWithoutYear({ title: it.title || "", sourceUrl })
               ) {
                 continue;
+              } else {
+                const sourcePageUrl = makeAbsoluteUrl(
+                  baselineBaseUrl,
+                  it.source_page_url || baselineBaseUrl
+                );
+                const sourcePolicy = evaluateKonsultimeNoYearSourcePolicy({
+                  municipalityHost,
+                  sourceUrl,
+                  sourcePageUrl,
+                  itemBaseUrl: baselineBaseUrl,
+                });
+                if (!sourcePolicy.allowed) continue;
               }
               baselineKeepableCount++;
             }
@@ -1973,6 +2048,7 @@ app.post("/api/scrape/run", async (req, res) => {
           let skipped_wrong_year = 0;
           let skipped_missing_url = 0;
           let skipped_no_year_keyword = 0;
+          let skipped_no_year_source_policy = 0;
           let parsed_kept = 0;
           let sample_kept_title = null;
           const keptDedupKeys = new Set();
@@ -2015,9 +2091,8 @@ app.post("/api/scrape/run", async (req, res) => {
             const itemBaseUrl =
               String(it.source_base_url || "").trim() || baselineSummary.used_url || baselineTargetUrl;
             const sourceUrl = makeAbsoluteUrl(itemBaseUrl, it.source_url);
-            const sourcePageUrl = makeAbsoluteUrl(itemBaseUrl, it.source_page_url || itemBaseUrl);
-            const sourceOrigin =
-              String(it.source_origin || "").trim() || getHost(sourcePageUrl || sourceUrl) || null;
+            let sourcePageUrl = makeAbsoluteUrl(itemBaseUrl, it.source_page_url || itemBaseUrl);
+            let sourceOrigin = String(it.source_origin || "").trim();
 
             if (!sourceUrl) {
               skipped++;
@@ -2051,7 +2126,23 @@ app.post("/api/scrape/run", async (req, res) => {
               sourceSummary.skipped_no_year_keyword++;
               skipped_no_year_keyword++;
               continue;
+            } else if (category === "Konsultime publike") {
+              const sourcePolicy = evaluateKonsultimeNoYearSourcePolicy({
+                municipalityHost,
+                sourceUrl,
+                sourcePageUrl,
+                itemBaseUrl,
+              });
+              if (!sourcePolicy.allowed) {
+                skipped++;
+                sourceSummary.skipped++;
+                sourceSummary.skipped_no_year_source_policy++;
+                skipped_no_year_source_policy++;
+                continue;
+              }
+              sourcePageUrl = sourcePolicy.resolvedSourcePageUrl || sourcePageUrl;
             }
+            sourceOrigin = sourceOrigin || getHost(sourcePageUrl || sourceUrl) || null;
 
             parsed_kept++;
             sourceSummary.kept++;
@@ -2145,6 +2236,7 @@ app.post("/api/scrape/run", async (req, res) => {
             skipped_missing_date,
             skipped_wrong_year,
             skipped_no_year_keyword,
+            skipped_no_year_source_policy,
             baseline: baselineSummary,
             fallback:
               category === "Konsultime publike" && fallbackSummary.attempted
