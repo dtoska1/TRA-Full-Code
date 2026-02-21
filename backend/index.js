@@ -185,6 +185,8 @@ const KONSULTIME_FALLBACK_KEYWORDS = [
   "degjes",
 ];
 const KONSULTIME_FALLBACK_MAX_LINKS = 6;
+const KONSULTIME_NO_YEAR_KEEP_RE =
+  /\b(konsultim[a-z]*|konsultime[a-z]*|degjes[a-z]*|njoftim[a-z]*|proces\s*verbal[a-z]*|takim[a-z]*|projekt[a-z]*|draft[a-z]*)\b/;
 
 pool.on("connect", (client) => {
   client
@@ -421,6 +423,12 @@ function normalizeTitle(s) {
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
+}
+
+function shouldKeepKonsultimeWithoutYear({ title, sourceUrl }) {
+  const haystack = `${normalizeTitle(title)} ${normalizeTitle(sourceUrl)}`.trim();
+  if (!haystack) return false;
+  return KONSULTIME_NO_YEAR_KEEP_RE.test(haystack);
 }
 
 function toNameKey(s) {
@@ -1866,6 +1874,7 @@ app.post("/api/scrape/run", async (req, res) => {
             skipped: 0,
             skipped_missing_date: 0,
             skipped_wrong_year: 0,
+            skipped_no_year_keyword: 0,
           };
           const fallbackSummary = {
             attempted: false,
@@ -1880,6 +1889,7 @@ app.post("/api/scrape/run", async (req, res) => {
             skipped: 0,
             skipped_missing_date: 0,
             skipped_wrong_year: 0,
+            skipped_no_year_keyword: 0,
           };
           const mergedScrapedItems = baselineResult.items.map((it) => ({
             ...it,
@@ -1898,6 +1908,11 @@ app.post("/api/scrape/run", async (req, res) => {
                 if (!publishedDate) continue;
                 const itemYear = Number.parseInt(String(publishedDate).slice(0, 4), 10);
                 if (!Number.isFinite(itemYear) || itemYear !== year) continue;
+              } else if (
+                category === "Konsultime publike" &&
+                !shouldKeepKonsultimeWithoutYear({ title: it.title || "", sourceUrl })
+              ) {
+                continue;
               }
               baselineKeepableCount++;
             }
@@ -1957,6 +1972,7 @@ app.post("/api/scrape/run", async (req, res) => {
           let skipped_missing_date = 0;
           let skipped_wrong_year = 0;
           let skipped_missing_url = 0;
+          let skipped_no_year_keyword = 0;
           let parsed_kept = 0;
           let sample_kept_title = null;
           const keptDedupKeys = new Set();
@@ -2026,6 +2042,15 @@ app.post("/api/scrape/run", async (req, res) => {
                 skipped_wrong_year++;
                 continue;
               }
+            } else if (
+              category === "Konsultime publike" &&
+              !shouldKeepKonsultimeWithoutYear({ title, sourceUrl })
+            ) {
+              skipped++;
+              sourceSummary.skipped++;
+              sourceSummary.skipped_no_year_keyword++;
+              skipped_no_year_keyword++;
+              continue;
             }
 
             parsed_kept++;
@@ -2119,6 +2144,7 @@ app.post("/api/scrape/run", async (req, res) => {
             skipped_missing_url,
             skipped_missing_date,
             skipped_wrong_year,
+            skipped_no_year_keyword,
             baseline: baselineSummary,
             fallback:
               category === "Konsultime publike" && fallbackSummary.attempted

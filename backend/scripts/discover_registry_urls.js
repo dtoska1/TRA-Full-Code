@@ -115,17 +115,53 @@ function isSkippableHref(href) {
 function parseArgs(argv) {
   let categoryArg = "";
   let scopeArg = "all";
+  let includeExisting = false;
+  let scopeMode = "all";
 
-  for (const raw of argv.slice(2)) {
-    const arg = String(raw || "").trim();
+  const rawArgs = argv.slice(2);
+  for (let idx = 0; idx < rawArgs.length; idx += 1) {
+    const arg = String(rawArgs[idx] || "").trim();
     if (!arg) continue;
 
     if (arg.startsWith("--category=")) {
       categoryArg = arg.slice("--category=".length);
       continue;
     }
+    if (arg === "--category") {
+      categoryArg = String(rawArgs[idx + 1] || "").trim();
+      idx += 1;
+      continue;
+    }
     if (arg.startsWith("--scope=")) {
       scopeArg = arg.slice("--scope=".length);
+      scopeMode = "scope";
+      continue;
+    }
+    if (arg === "--scope") {
+      scopeArg = String(rawArgs[idx + 1] || "").trim();
+      scopeMode = "scope";
+      idx += 1;
+      continue;
+    }
+    if (arg.startsWith("--only=")) {
+      scopeArg = arg.slice("--only=".length);
+      scopeMode = "only";
+      continue;
+    }
+    if (arg === "--only") {
+      scopeArg = String(rawArgs[idx + 1] || "").trim();
+      scopeMode = "only";
+      idx += 1;
+      continue;
+    }
+    if (arg === "--include-existing") {
+      includeExisting = true;
+      continue;
+    }
+    if (arg.startsWith("--include-existing=")) {
+      const rawValue = String(arg.slice("--include-existing=".length)).trim().toLowerCase();
+      if (["1", "true", "yes", "on"].includes(rawValue)) includeExisting = true;
+      if (["0", "false", "no", "off"].includes(rawValue)) includeExisting = false;
       continue;
     }
 
@@ -133,7 +169,10 @@ function parseArgs(argv) {
       categoryArg = arg;
       continue;
     }
-    if (scopeArg === "all") scopeArg = arg;
+    if (scopeArg === "all") {
+      scopeArg = arg;
+      scopeMode = "scope";
+    }
   }
 
   const categoryKey = String(categoryArg || "").trim().toLowerCase();
@@ -155,6 +194,8 @@ function parseArgs(argv) {
     config: CATEGORY_CONFIG[categoryKey],
     scope,
     scopeKey: scope === "all" ? null : scope,
+    scopeMode,
+    includeExisting,
   };
 }
 
@@ -563,7 +604,7 @@ function printRankedList(records, config) {
 }
 
 async function main() {
-  const { categoryKey, config, scope, scopeKey } = parseArgs(process.argv);
+  const { categoryKey, config, scope, scopeKey, scopeMode, includeExisting } = parseArgs(process.argv);
   const outputPath = path.join(__dirname, "..", "tmp", `registry_discovery_${config.outputName}.json`);
   const pool = new Pool({
     connectionString: DATABASE_URL,
@@ -583,20 +624,41 @@ async function main() {
       FROM source_registry sr
       JOIN municipalities m ON m.id = sr.municipality_id
       WHERE sr.is_primary = TRUE
-        AND (sr.${config.columnName} IS NULL OR btrim(sr.${config.columnName}) = '')
         AND ($1::text IS NULL OR m.name_key = $1::text)
       ORDER BY m.name_key ASC
     `;
 
     const { rows } = await pool.query(query, [scopeKey]);
-    const targets = rows.map((row) => ({
+    const includeScopedExisting = Boolean(scopeKey && includeExisting);
+    const skippedExisting = [];
+    const targets = rows
+      .filter((row) => {
+        const existingUrl = String(row.existing_url || "").trim();
+        const hasExisting = existingUrl.length > 0;
+        if (!hasExisting) return true;
+        if (includeScopedExisting) return true;
+        skippedExisting.push({
+          name_key: row.name_key,
+          existing_url: existingUrl,
+        });
+        return false;
+      })
+      .map((row) => ({
       ...row,
       start_url: String(row.final_url || "").trim() || String(row.base_url || "").trim(),
       [config.columnName]: row.existing_url,
     }));
 
     console.log(`Category: ${config.displayName}`);
-    console.log(`Target municipalities: ${targets.length} (scope=${scope})`);
+    console.log(
+      `Target municipalities: ${targets.length} (scope=${scope}, include_existing=${includeScopedExisting})`
+    );
+    if (scopeMode === "only" && scopeKey && targets.length === 0 && skippedExisting.length > 0) {
+      const skip = skippedExisting[0];
+      console.log(
+        `Skipped ${scopeKey}: ${config.columnName} already set (${skip.existing_url}). Use --include-existing to force re-discovery.`
+      );
+    }
 
     const records = await mapWithConcurrency(targets, CONCURRENCY, (row) =>
       discoverForMunicipality(row, config)
@@ -612,6 +674,7 @@ async function main() {
       category_key: categoryKey,
       source_registry_column: config.columnName,
       scope,
+      include_existing: includeScopedExisting,
       request_timeout_ms: REQUEST_TIMEOUT_MS,
       concurrency: CONCURRENCY,
       notes: [
