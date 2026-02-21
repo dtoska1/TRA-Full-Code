@@ -531,18 +531,31 @@ async function fetchHtml(url, options = {}) {
 
 async function scrapeGenericDocuments({
   url,
+  targetUrl,
+  year,
   limit = 50,
+  municipalityKey,
+  pageStart = 1,
+  category = "Vendime",
   requestTimeoutMs = SCRAPE_REQUEST_TIMEOUT_MS,
   maxCloudflareRedirects = MAX_CLOUDFLARE_REDIRECTS,
 }) {
+  const startUrl = targetUrl || url;
+  if (!startUrl) {
+    throw new Error("Missing target URL for generic documents scraper");
+  }
   const lim = Math.max(1, Math.min(200, Number(limit) || 50));
 
   const seenDocs = new Set();
   const items = [];
   const state = { cloudflareRedirectHits: 0 };
+  const isVendimeCategory = String(category || "").trim().toLowerCase() === "vendime";
 
   const maxListingPages = 5;
-  let pageUrl = url;
+  let pageUrl = startUrl;
+  void year;
+  void municipalityKey;
+  void pageStart;
 
   for (let page = 1; page <= maxListingPages; page++) {
     const listingFetch = await fetchHtml(pageUrl, {
@@ -568,12 +581,12 @@ async function scrapeGenericDocuments({
         html: listingHtml,
         maxPosts: lim,
       });
-      const needsVendimeFallback = direct.length === 0;
+      const needsVendimeFallback = isVendimeCategory && direct.length === 0;
       const vendimePostLinks = needsVendimeFallback
         ? extractVendimePostLinksFromListing({ baseUrl: pageUrl, html: listingHtml, maxPosts: lim })
         : [];
       const mergedPostLinks = Array.from(new Set([...vendimePostLinks, ...postLinks])).slice(0, lim);
-
+      
       for (const postUrl of mergedPostLinks) {
         if (items.length >= lim) break;
 
@@ -610,7 +623,7 @@ async function scrapeGenericDocuments({
     pageUrl = nextUrl;
   }
 
-  return { url, items: items.slice(0, lim) };
+  return { url: startUrl, items: items.slice(0, lim) };
 }
 
 module.exports = { scrapeGenericDocuments };

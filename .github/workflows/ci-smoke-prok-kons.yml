@@ -1,0 +1,141 @@
+name: CI Smoke Prok Kons
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  backend-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: tra
+          POSTGRES_PASSWORD: tra
+          POSTGRES_DB: tra
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tra -d tra"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve Node version
+        id: node
+        shell: bash
+        run: |
+          if [[ -f .nvmrc ]]; then
+            v="$(tr -d '[:space:]' < .nvmrc)"
+          elif [[ -f .node-version ]]; then
+            v="$(tr -d '[:space:]' < .node-version)"
+          elif [[ -f backend/.nvmrc ]]; then
+            v="$(tr -d '[:space:]' < backend/.nvmrc)"
+          elif [[ -f backend/.node-version ]]; then
+            v="$(tr -d '[:space:]' < backend/.node-version)"
+          else
+            v="lts/*"
+          fi
+          echo "node_version=$v" >> "$GITHUB_OUTPUT"
+          echo "Using Node version: $v"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.node.outputs.node_version }}
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install backend deps
+        working-directory: backend
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: npm ci
+
+      - name: Bootstrap DB schema and seeds
+        working-directory: backend
+        env:
+          DATABASE_URL: postgres://tra:tra@127.0.0.1:5432/tra
+        run: node scripts/ci_bootstrap_db.js
+
+      - name: Start Meili health stub
+        shell: bash
+        run: |
+          node -e "require('http').createServer((req,res)=>{if(req.url==='/health'){res.writeHead(200,{'content-type':'application/json'});res.end('{\"status\":\"available\"}');return;}res.writeHead(404);res.end();}).listen(7700,'127.0.0.1')" > meili-stub.log 2>&1 &
+          echo $! > meili-stub.pid
+
+      - name: Start backend
+        working-directory: backend
+        env:
+          NODE_ENV: test
+          PORT: "5050"
+          DATABASE_URL: postgres://tra:tra@127.0.0.1:5432/tra
+          REDIS_URL: redis://127.0.0.1:6379
+          MEILI_HOST: http://127.0.0.1:7700
+          MEILI_MASTER_KEY: local-ci-master-key
+          ADMIN_TOKEN: local-ci-admin-token
+          PUBLIC_ORIGINS: http://localhost:3000
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: |
+          npm run dev > ../backend-ci.log 2>&1 &
+          echo $! > ../backend-ci.pid
+
+      - name: Wait for backend health
+        shell: bash
+        run: |
+          for i in {1..90}; do
+            status="$(curl -sS -o /tmp/backend-health.json -w "%{http_code}" http://127.0.0.1:5050/health || true)"
+            if [[ "$status" == "200" ]]; then
+              echo "Backend is healthy."
+              cat /tmp/backend-health.json
+              exit 0
+            fi
+            if [[ -f backend-ci.pid ]] && ! kill -0 "$(cat backend-ci.pid)" 2>/dev/null; then
+              echo "Backend process exited before becoming healthy."
+              cat backend-ci.log || true
+              exit 1
+            fi
+            sleep 1
+          done
+          echo "Timed out waiting for backend health."
+          cat /tmp/backend-health.json || true
+          cat backend-ci.log || true
+          exit 1
+
+      - name: Run smoke checks
+        working-directory: backend
+        env:
+          SMOKE_BASE_URL: http://127.0.0.1:5050
+          ADMIN_TOKEN: local-ci-admin-token
+        run: node scripts/ci_smoke.js
+
+      - name: Print backend logs on failure
+        if: failure()
+        run: cat backend-ci.log || true
+
+      - name: Stop backend
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f backend-ci.pid ]]; then
+            kill "$(cat backend-ci.pid)" || true
+          fi
+          if [[ -f meili-stub.pid ]]; then
+            kill "$(cat meili-stub.pid)" || true
+          fi
