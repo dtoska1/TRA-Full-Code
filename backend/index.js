@@ -10,6 +10,7 @@ const cors = require("cors");
 const helmet = require("helmet");
 const morgan = require("morgan");
 const rateLimit = require("express-rate-limit");
+const cheerio = require("cheerio");
 const { Pool } = require("pg");
 const dns = require("dns");
 const net = require("net");
@@ -171,6 +172,19 @@ const SCRAPE_JOB_TIMEOUT_MS = (() => {
   const raw = Number.parseInt(String(process.env.SCRAPE_JOB_TIMEOUT_MS || ""), 10);
   return Number.isFinite(raw) && raw > 0 ? raw : 90000;
 })();
+const SCRAPE_REQUEST_TIMEOUT_MS = (() => {
+  const raw = Number.parseInt(String(process.env.SCRAPE_REQUEST_TIMEOUT_MS || ""), 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 20000;
+})();
+const KONSULTIME_FALLBACK_KEYWORDS = [
+  "njoftime",
+  "proces",
+  "verbale",
+  "vendime",
+  "konsultim",
+  "degjes",
+];
+const KONSULTIME_FALLBACK_MAX_LINKS = 6;
 
 pool.on("connect", (client) => {
   client
@@ -670,66 +684,175 @@ async function upsertRegistryDocumentItem({
     if (!upsert.rowCount) return "skipped";
     return upsert.rows[0].inserted ? "inserted" : "updated";
   } catch (err) {
-    if (err?.code !== "23505") throw err;
+    if (err?.code === "23505") {
+      const existing = await pool.query(
+        `
+        SELECT id, published_date
+        FROM items
+        WHERE municipality_id = $1
+          AND category = $2
+          AND source_url = $3
+        LIMIT 1
+        `,
+        [municipalityId, category, sourceUrl]
+      );
+      if (!existing.rowCount) return "skipped";
 
-    const existing = await pool.query(
+      const row = existing.rows[0];
+      const mergedDate = row.published_date || publishedDate || null;
+      const mergedDateUnknown = mergedDate ? false : true;
+      const updated = await pool.query(
+        `
+        UPDATE items
+        SET
+          title = COALESCE($2, title),
+          title_normalized = COALESCE($3, title_normalized),
+          published_date = $4::date,
+          date_unknown = $5,
+          source_page_url = COALESCE($6, source_page_url),
+          source_origin = COALESCE($7, source_origin),
+          dedup_key = CASE
+            WHEN dedup_key = $8 THEN dedup_key
+            WHEN EXISTS (
+              SELECT 1
+              FROM items i2
+              WHERE i2.municipality_id = $9
+                AND i2.category = $10
+                AND i2.dedup_key = $8
+                AND i2.id <> $1
+            ) THEN dedup_key
+            ELSE $8
+          END,
+          status = CASE WHEN $11::boolean THEN 'published' ELSE status END,
+          updated_at = now()
+        WHERE id = $1
+        `,
+        [
+          row.id,
+          title,
+          titleNormalized,
+          mergedDate,
+          mergedDateUnknown,
+          sourcePageUrl,
+          sourceOrigin,
+          dedupKey,
+          municipalityId,
+          category,
+          shouldPublish,
+        ]
+      );
+
+      return updated.rowCount ? "updated" : "skipped";
+    }
+
+    if (err?.code !== "42P10") throw err;
+
+    const existingByDedup = await pool.query(
       `
-      SELECT id, published_date
+      SELECT id, title, title_normalized, published_date, date_unknown,
+             source_url, source_page_url, source_origin, status
       FROM items
       WHERE municipality_id = $1
         AND category = $2
-        AND source_url = $3
+        AND dedup_key = $3
       LIMIT 1
       `,
-      [municipalityId, category, sourceUrl]
+      [municipalityId, category, dedupKey]
     );
-    if (!existing.rowCount) return "skipped";
 
-    const row = existing.rows[0];
+    if (!existingByDedup.rowCount) {
+      const insertedFallback = await pool.query(
+        `
+        INSERT INTO items (
+          municipality_id, category,
+          title, title_normalized, summary,
+          published_date, date_unknown, date_source,
+          source_url, source_page_url, source_origin, source_url_missing_reason,
+          collected_at, ingestion_method,
+          dedup_key, possible_duplicate,
+          status, created_by_user_id
+        )
+        VALUES (
+          $1, $2,
+          $3, $4, NULL,
+          $5::date, $6, 'scrape_registry',
+          $7, $8, $9, NULL,
+          now(), 'scrape',
+          $10, false,
+          $11, $12
+        )
+        ON CONFLICT (source_url) WHERE source_url IS NOT NULL
+        DO NOTHING
+        RETURNING id
+        `,
+        [
+          municipalityId,
+          category,
+          title,
+          titleNormalized,
+          publishedDate,
+          dateUnknown,
+          sourceUrl,
+          sourcePageUrl,
+          sourceOrigin,
+          dedupKey,
+          defaultStatus,
+          systemUserId,
+        ]
+      );
+      return insertedFallback.rowCount ? "inserted" : "skipped";
+    }
+
+    const row = existingByDedup.rows[0];
     const mergedDate = row.published_date || publishedDate || null;
     const mergedDateUnknown = mergedDate ? false : true;
-    const updated = await pool.query(
+    const mergedTitle = title || row.title || null;
+    const mergedTitleNormalized = titleNormalized || row.title_normalized || null;
+    const mergedSourceUrl = sourceUrl || row.source_url || null;
+    const mergedSourcePageUrl = sourcePageUrl || row.source_page_url || null;
+    const mergedSourceOrigin = sourceOrigin || row.source_origin || null;
+    const mergedStatus = shouldPublish ? "published" : row.status;
+    const changed =
+      String(row.title || "") !== String(mergedTitle || "") ||
+      String(row.title_normalized || "") !== String(mergedTitleNormalized || "") ||
+      String(row.published_date || "") !== String(mergedDate || "") ||
+      Boolean(row.date_unknown) !== Boolean(mergedDateUnknown) ||
+      String(row.source_url || "") !== String(mergedSourceUrl || "") ||
+      String(row.source_page_url || "") !== String(mergedSourcePageUrl || "") ||
+      String(row.source_origin || "") !== String(mergedSourceOrigin || "") ||
+      String(row.status || "") !== String(mergedStatus || "");
+
+    if (!changed) return "skipped";
+
+    const updatedFallback = await pool.query(
       `
       UPDATE items
       SET
-        title = COALESCE($2, title),
-        title_normalized = COALESCE($3, title_normalized),
+        title = $2,
+        title_normalized = $3,
         published_date = $4::date,
         date_unknown = $5,
-        source_page_url = COALESCE($6, source_page_url),
-        source_origin = COALESCE($7, source_origin),
-        dedup_key = CASE
-          WHEN dedup_key = $8 THEN dedup_key
-          WHEN EXISTS (
-            SELECT 1
-            FROM items i2
-            WHERE i2.municipality_id = $9
-              AND i2.category = $10
-              AND i2.dedup_key = $8
-              AND i2.id <> $1
-          ) THEN dedup_key
-          ELSE $8
-        END,
-        status = CASE WHEN $11::boolean THEN 'published' ELSE status END,
+        source_url = $6,
+        source_page_url = $7,
+        source_origin = $8,
+        status = $9,
         updated_at = now()
       WHERE id = $1
       `,
       [
         row.id,
-        title,
-        titleNormalized,
+        mergedTitle,
+        mergedTitleNormalized,
         mergedDate,
         mergedDateUnknown,
-        sourcePageUrl,
-        sourceOrigin,
-        dedupKey,
-        municipalityId,
-        category,
-        shouldPublish,
+        mergedSourceUrl,
+        mergedSourcePageUrl,
+        mergedSourceOrigin,
+        mergedStatus,
       ]
     );
 
-    return updated.rowCount ? "updated" : "skipped";
+    return updatedFallback.rowCount ? "updated" : "skipped";
   }
 }
 
@@ -811,6 +934,98 @@ function applyYearTemplate(url, year) {
   if (!url) return url;
   if (url.includes("{year}")) return url.replace("{year}", String(year));
   return url;
+}
+
+function decodeUrlPartLower(value) {
+  const s = String(value || "");
+  if (!s) return "";
+  try {
+    return decodeURIComponent(s).toLowerCase();
+  } catch {
+    return s.toLowerCase();
+  }
+}
+
+async function fetchHtmlForDiscovery(url) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SCRAPE_REQUEST_TIMEOUT_MS);
+  const headers = {
+    "User-Agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "sq-AL,sq;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Cache-Control": "no-cache",
+    Pragma: "no-cache",
+  };
+
+  try {
+    const response = await fetch(url, {
+      headers,
+      redirect: "follow",
+      signal: controller.signal,
+    });
+    const finalUrl = String(response.url || url);
+    if (!response.ok) {
+      const err = new Error(`Fetch failed: ${response.status} ${response.statusText}`);
+      err.code = `HTTP_${response.status}`;
+      err.final_url = finalUrl;
+      throw err;
+    }
+    const html = await response.text();
+    return {
+      finalUrl,
+      html,
+    };
+  } catch (err) {
+    if (err?.name === "AbortError") {
+      const timeoutErr = new Error(`Request timed out after ${SCRAPE_REQUEST_TIMEOUT_MS}ms: ${url}`);
+      timeoutErr.code = "TIMEOUT";
+      timeoutErr.last_error_type = "TIMEOUT";
+      timeoutErr.final_url = url;
+      throw timeoutErr;
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function extractSameHostKeywordLinks({
+  startUrl,
+  html,
+  keywords = KONSULTIME_FALLBACK_KEYWORDS,
+  maxLinks = KONSULTIME_FALLBACK_MAX_LINKS,
+}) {
+  if (!startUrl || !html) return [];
+  const normalizedKeywords = keywords.map((k) => String(k || "").toLowerCase()).filter(Boolean);
+  if (!normalizedKeywords.length) return [];
+
+  const baseHost = getHost(startUrl);
+  if (!baseHost) return [];
+  const startNoHash = String(startUrl).split("#")[0];
+  const links = new Set();
+  const $ = cheerio.load(html);
+
+  $("a[href]").each((_, el) => {
+    if (links.size >= maxLinks) return;
+    const href = String($(el).attr("href") || "").trim();
+    if (!href) return;
+
+    const hrefLower = decodeUrlPartLower(href);
+    const hrefHasKeyword = normalizedKeywords.some((keyword) => hrefLower.includes(keyword));
+    if (!hrefHasKeyword) return;
+
+    const abs = makeAbsoluteUrl(startUrl, href);
+    if (!abs) return;
+    if (getHost(abs) !== baseHost) return;
+    if (/\.(pdf|doc|docx|xls|xlsx|zip|rar)(\?|#|$)/i.test(abs)) return;
+
+    const noHash = abs.split("#")[0];
+    if (!noHash || noHash === startNoHash) return;
+    links.add(noHash);
+  });
+
+  return Array.from(links).slice(0, maxLinks);
 }
 
 function getHost(url) {
@@ -1652,6 +1867,85 @@ app.post("/api/scrape/run", async (req, res) => {
             skipped_missing_date: 0,
             skipped_wrong_year: 0,
           };
+          const fallbackSummary = {
+            attempted: false,
+            used_url: null,
+            discovered_links_total: 0,
+            used_links_total: 0,
+            used_links: [],
+            parsed_rows_total: 0,
+            kept: 0,
+            inserted: 0,
+            updated: 0,
+            skipped: 0,
+            skipped_missing_date: 0,
+            skipped_wrong_year: 0,
+          };
+          const mergedScrapedItems = baselineResult.items.map((it) => ({
+            ...it,
+            source_kind: "baseline",
+            source_base_url: baselineSummary.used_url || baselineTargetUrl,
+          }));
+
+          if (category === "Konsultime publike") {
+            let baselineKeepableCount = 0;
+            const baselineBaseUrl = baselineSummary.used_url || baselineTargetUrl;
+            for (const it of baselineResult.items) {
+              const sourceUrl = makeAbsoluteUrl(baselineBaseUrl, it.source_url);
+              if (!sourceUrl) continue;
+              if (yearFilterRequested) {
+                const publishedDate = sanitizeISODate(it.published_date || null);
+                if (!publishedDate) continue;
+                const itemYear = Number.parseInt(String(publishedDate).slice(0, 4), 10);
+                if (!Number.isFinite(itemYear) || itemYear !== year) continue;
+              }
+              baselineKeepableCount++;
+            }
+
+            if (baselineSummary.parsed_rows_total === 0 || baselineKeepableCount === 0) {
+              fallbackSummary.attempted = true;
+              const discoveryStartUrl = baselineSummary.used_url || baselineTargetUrl;
+              fallbackSummary.used_url = discoveryStartUrl;
+
+              try {
+                const discoveryFetch = await fetchHtmlForDiscovery(discoveryStartUrl);
+                const discoveryBaseUrl = discoveryFetch.finalUrl || discoveryStartUrl;
+                fallbackSummary.used_url = discoveryBaseUrl;
+                const discoveredLinks = extractSameHostKeywordLinks({
+                  startUrl: discoveryBaseUrl,
+                  html: discoveryFetch.html,
+                });
+
+                fallbackSummary.discovered_links_total = discoveredLinks.length;
+                for (const subpageUrl of discoveredLinks) {
+                  const subResult = await scrapeGenericDocuments({
+                    targetUrl: subpageUrl,
+                    year,
+                    limit,
+                    municipalityKey,
+                    pageStart,
+                    category,
+                  });
+                  const subBaseUrl = subResult.usedUrl || subResult.url || subpageUrl;
+                  fallbackSummary.used_links.push(subBaseUrl);
+                  fallbackSummary.used_links_total = fallbackSummary.used_links.length;
+                  fallbackSummary.parsed_rows_total += subResult.items.length;
+                  mergedScrapedItems.push(
+                    ...subResult.items.map((it) => ({
+                      ...it,
+                      source_kind: "fallback",
+                      source_base_url: subBaseUrl,
+                    }))
+                  );
+                }
+              } catch (fallbackErr) {
+                fallbackSummary.error = safePublicErrorMessage(
+                  fallbackErr,
+                  "Konsultime fallback discovery failed"
+                );
+              }
+            }
+          }
 
           const shouldPublish =
             forcePublish || registryRow.verification_status === "CHECKED";
@@ -1666,11 +1960,44 @@ app.post("/api/scrape/run", async (req, res) => {
           let parsed_kept = 0;
           let sample_kept_title = null;
           const keptDedupKeys = new Set();
+          let uniqueScrapedItems = mergedScrapedItems;
+          if (category === "Konsultime publike" && fallbackSummary.attempted) {
+            uniqueScrapedItems = [];
+            const seenMergedDedupKeys = new Set();
+            for (const it of mergedScrapedItems) {
+              const itemBaseUrl =
+                String(it.source_base_url || "").trim() ||
+                baselineSummary.used_url ||
+                baselineTargetUrl;
+              const sourceUrl = makeAbsoluteUrl(itemBaseUrl, it.source_url);
+              if (!sourceUrl) {
+                uniqueScrapedItems.push(it);
+                continue;
+              }
+              const title = it.title || "";
+              const publishedDate = sanitizeISODate(it.published_date || null);
+              const titleNormalized = it.title_normalized || normalizeTitle(title);
+              const dedupKey = dedupKeyRegistryDocumentV1({
+                municipalityId,
+                category,
+                publishedDate,
+                title,
+                titleNormalized,
+                sourceUrl,
+              });
+              if (seenMergedDedupKeys.has(dedupKey)) continue;
+              seenMergedDedupKeys.add(dedupKey);
+              uniqueScrapedItems.push(it);
+            }
+          }
 
-          for (const it of baselineResult.items) {
+          for (const it of uniqueScrapedItems) {
+            const sourceKind = it.source_kind === "fallback" ? "fallback" : "baseline";
+            const sourceSummary = sourceKind === "fallback" ? fallbackSummary : baselineSummary;
             const title = it.title || "";
             const published_date = sanitizeISODate(it.published_date || null);
-            const itemBaseUrl = baselineSummary.used_url || baselineTargetUrl;
+            const itemBaseUrl =
+              String(it.source_base_url || "").trim() || baselineSummary.used_url || baselineTargetUrl;
             const sourceUrl = makeAbsoluteUrl(itemBaseUrl, it.source_url);
             const sourcePageUrl = makeAbsoluteUrl(itemBaseUrl, it.source_page_url || itemBaseUrl);
             const sourceOrigin =
@@ -1678,7 +2005,7 @@ app.post("/api/scrape/run", async (req, res) => {
 
             if (!sourceUrl) {
               skipped++;
-              baselineSummary.skipped++;
+              sourceSummary.skipped++;
               skipped_missing_url++;
               continue;
             }
@@ -1686,23 +2013,23 @@ app.post("/api/scrape/run", async (req, res) => {
             if (yearFilterRequested) {
               if (!published_date) {
                 skipped++;
-                baselineSummary.skipped++;
-                baselineSummary.skipped_missing_date++;
+                sourceSummary.skipped++;
+                sourceSummary.skipped_missing_date++;
                 skipped_missing_date++;
                 continue;
               }
               const itemYear = Number.parseInt(String(published_date).slice(0, 4), 10);
               if (!Number.isFinite(itemYear) || itemYear !== year) {
                 skipped++;
-                baselineSummary.skipped++;
-                baselineSummary.skipped_wrong_year++;
+                sourceSummary.skipped++;
+                sourceSummary.skipped_wrong_year++;
                 skipped_wrong_year++;
                 continue;
               }
             }
 
             parsed_kept++;
-            baselineSummary.kept++;
+            sourceSummary.kept++;
             if (!sample_kept_title) sample_kept_title = title;
             const titleNormalized = it.title_normalized || normalizeTitle(title);
             const dedupKey = dedupKeyRegistryDocumentV1({
@@ -1732,13 +2059,13 @@ app.post("/api/scrape/run", async (req, res) => {
 
             if (action === "inserted") {
               inserted++;
-              baselineSummary.inserted++;
+              sourceSummary.inserted++;
             } else if (action === "updated") {
               updated++;
-              baselineSummary.updated++;
+              sourceSummary.updated++;
             } else {
               skipped++;
-              baselineSummary.skipped++;
+              sourceSummary.skipped++;
             }
           }
 
@@ -1779,7 +2106,8 @@ app.post("/api/scrape/run", async (req, res) => {
             category,
             used_registry_id: registryRow.id,
             scraped_from: baselineSummary.used_url || baselineTargetUrl,
-            parsed_rows_total: baselineSummary.parsed_rows_total,
+            parsed_rows_total:
+              baselineSummary.parsed_rows_total + Number(fallbackSummary.parsed_rows_total || 0),
             parsed_rows_kept: parsed_kept,
             force_publish: forcePublish,
             should_publish: shouldPublish,
@@ -1792,6 +2120,10 @@ app.post("/api/scrape/run", async (req, res) => {
             skipped_missing_date,
             skipped_wrong_year,
             baseline: baselineSummary,
+            fallback:
+              category === "Konsultime publike" && fallbackSummary.attempted
+                ? fallbackSummary
+                : undefined,
             sample_title: sample_kept_title || baselineResult.items[0]?.title || null,
             next: "Next: verify /api/feed returns this municipality/category.",
           };
