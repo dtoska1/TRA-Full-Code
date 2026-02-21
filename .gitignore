@@ -9,6 +9,8 @@ yarn-error.log*
 **/.env
 **/.env.*
 !**/.env.example
+backend/.env
+frontend/.env*
 
 # Builds
 **/dist/
@@ -27,8 +29,12 @@ test-results/
 backend/.pw_state/
 backend/.pw-profile/
 **/storage_state.json
+backend/tmp/
+backend/tmp/*
 
 # local junk
 /tatus
 *.tmp
 *.log
+audit_municipality_keys_output.txt
+*_output.txt

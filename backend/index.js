@@ -21,10 +21,24 @@ dns.setDefaultResultOrder("ipv4first");
 // Scrapers
 const { scrapeTiranaVendime } = require("./scrapers/tiranaVendime");
 const { scrapeGenericDocuments } = require("./scrapers/genericDocuments");
+const { scrapeVendimeAl } = require("./scrapers/vendimeAl");
 
 console.log("LOADED INDEX.JS FROM:", __filename);
 
 const app = express();
+app.disable("x-powered-by");
+
+const NODE_ENV = String(process.env.NODE_ENV || "development").toLowerCase();
+const ADMIN_TOKEN = String(process.env.ADMIN_TOKEN || "").trim();
+const PUBLIC_ORIGINS = String(process.env.PUBLIC_ORIGINS || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+if (NODE_ENV === "production" && !ADMIN_TOKEN) {
+  console.error("Missing required env var ADMIN_TOKEN in production.");
+  process.exit(1);
+}
 
 // If deployed behind a reverse proxy/load balancer, set TRUST_PROXY=1.
 if (String(process.env.TRUST_PROXY || "") === "1") {
@@ -34,10 +48,46 @@ if (String(process.env.TRUST_PROXY || "") === "1") {
 // --------------------
 // Middleware
 // --------------------
-app.use(cors());
+const originAllowlist = new Set(PUBLIC_ORIGINS);
+
+app.use(
+  cors({
+    origin(origin, cb) {
+      // Allow non-browser clients (curl, server-to-server) which do not send Origin.
+      if (!origin) return cb(null, true);
+
+      // If no allowlist configured, default to localhost-only in development.
+      if (originAllowlist.size === 0) {
+        if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin)) {
+          return cb(null, true);
+        }
+        return cb(new Error("CORS blocked: origin not allowed"), false);
+      }
+
+      if (originAllowlist.has(origin)) return cb(null, true);
+      return cb(new Error("CORS blocked: origin not allowed"), false);
+    },
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Admin-Token"],
+    maxAge: 86400,
+  })
+);
+
+// Return JSON for CORS rejections instead of the default HTML error.
+app.use((err, req, res, next) => {
+  if (err && String(err.message || "").toLowerCase().includes("cors blocked")) {
+    return res.status(403).json({
+      ok: false,
+      error: "cors_blocked",
+      message: "Origin not allowed.",
+    });
+  }
+  return next(err);
+});
+
 app.use(helmet());
-app.use(express.json());
-app.use(morgan("dev"));
+app.use(express.json({ limit: "1mb" }));
+app.use(morgan(NODE_ENV === "production" ? "combined" : "dev"));
 
 const apiLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -51,6 +101,45 @@ const apiLimiter = rateLimit({
   },
 });
 app.use("/api", apiLimiter);
+const scrapeLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: Number(process.env.SCRAPE_RATE_LIMIT_MAX || 10),
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    error: "rate_limited",
+    message: "Too many scrape requests, please try again later.",
+  },
+});
+app.use("/api/scrape", scrapeLimiter);
+
+function requireAdmin(req, res, next) {
+  if (!ADMIN_TOKEN) {
+    return res.status(503).json({
+      ok: false,
+      error: "server_misconfigured",
+      message: "ADMIN_TOKEN is not configured on the server.",
+    });
+  }
+
+  const auth = String(req.headers.authorization || "");
+  const bearer = auth.toLowerCase().startsWith("bearer ") ? auth.slice(7).trim() : "";
+  const headerToken = String(req.headers["x-admin-token"] || "").trim();
+  const token = bearer || headerToken;
+
+  if (token && token === ADMIN_TOKEN) return next();
+
+  return res.status(401).json({
+    ok: false,
+    error: "unauthorized",
+    message: "Missing or invalid admin token.",
+  });
+}
+
+// Lock down admin surfaces.
+app.use("/api/scrape", requireAdmin);
+app.use("/api/debug", requireAdmin);
 
 // Always declare UTF-8 JSON (API responses)
 app.use((req, res, next) => {
@@ -189,13 +278,9 @@ async function checkMeiliHealth() {
   const host = process.env.MEILI_HOST;
   if (!host) throw new Error("MEILI_HOST is not set");
 
-  const headers = {};
-  if (process.env.MEILI_MASTER_KEY) {
-    headers.Authorization = `Bearer ${process.env.MEILI_MASTER_KEY}`;
-  }
-
+  // /health does not require auth; do not send privileged keys over the wire.
   const response = await withTimeout(
-    fetch(`${host.replace(/\/+$/, "")}/health`, { headers }),
+    fetch(`${host.replace(/\/+$/, "")}/health`),
     1500,
     "Meilisearch health check timed out after 1500ms"
   );
@@ -218,6 +303,7 @@ function formatCheckError(err, fallbackMessage) {
 }
 
 let _vPublicFeedColumns = null;
+let _hasMunicipalityKeyAliasesTable = null;
 async function getVPublicFeedColumns() {
   if (_vPublicFeedColumns) return _vPublicFeedColumns;
   const r = await pool.query(
@@ -231,10 +317,26 @@ async function getVPublicFeedColumns() {
   return _vPublicFeedColumns;
 }
 
+async function hasMunicipalityKeyAliasesTable() {
+  if (_hasMunicipalityKeyAliasesTable !== null) return _hasMunicipalityKeyAliasesTable;
+  const r = await pool.query(
+    `SELECT to_regclass('public.municipality_key_aliases')::text AS table_name`
+  );
+  _hasMunicipalityKeyAliasesTable = Boolean(r.rows[0]?.table_name);
+  return _hasMunicipalityKeyAliasesTable;
+}
+
 function parsePositiveInt(value, fallback) {
   if (value === undefined || value === null || value === "") return fallback;
   const n = Number(value);
   if (!Number.isInteger(n) || n < 1) return null;
+  return n;
+}
+
+function parseYear(value, fallback) {
+  if (value === undefined || value === null || value === "") return fallback;
+  const n = Number(String(value).trim());
+  if (!Number.isInteger(n) || n < 2000 || n > 2100) return null;
   return n;
 }
 
@@ -252,7 +354,8 @@ function safePublicErrorMessage(err, fallbackMessage) {
 
   const redacted = raw
     .replace(/postgres:\/\/[^@\s]+@/gi, "postgres://***@")
-    .replace(/password=[^\s]+/gi, "password=***");
+    .replace(/password=[^\s]+/gi, "password=***")
+    .replace(/bearer\s+[A-Za-z0-9\-\._~\+\/]+=*/gi, "bearer ***");
 
   return redacted.length > 200 ? fallbackMessage : redacted;
 }
@@ -362,15 +465,32 @@ function sanitizeISODate(s) {
 
 
 async function getMunicipalityId({ municipality, municipality_id }) {
-  if (municipality_id) return municipality_id;
+  if (municipality_id !== undefined && municipality_id !== null && String(municipality_id).trim() !== "") {
+    const n = Number(String(municipality_id).trim());
+    if (!Number.isInteger(n) || n < 1) return null;
+    return n;
+  }
   if (!municipality) return null;
 
   const key = toNameKey(municipality);
+  const aliasTableExists = await hasMunicipalityKeyAliasesTable();
 
-  const r = await pool.query(
-    `SELECT id FROM municipalities WHERE name_key = $1 LIMIT 1`,
-    [key]
-  );
+  const r = aliasTableExists
+    ? await pool.query(
+        `
+        SELECT m.id
+        FROM municipalities m
+        LEFT JOIN municipality_key_aliases a ON a.municipality_id = m.id
+        WHERE lower(m.name_key) = $1 OR lower(a.alias_key) = $1
+        ORDER BY CASE WHEN lower(m.name_key) = $1 THEN 0 ELSE 1 END
+        LIMIT 1
+        `,
+        [key]
+      )
+    : await pool.query(
+        `SELECT id FROM municipalities WHERE lower(name_key) = $1 LIMIT 1`,
+        [key]
+      );
   return r.rowCount ? r.rows[0].id : null;
 }
 
@@ -581,8 +701,14 @@ app.get("/api/feed", async (req, res) => {
     const where = [];
 
     if (municipality) {
-      params.push(municipality);
-      where.push(`lower(municipality_key) = $${params.length}`);
+      const municipalityId = await getMunicipalityId({ municipality });
+      if (municipalityId) {
+        params.push(municipalityId);
+        where.push(`municipality_id = $${params.length}`);
+      } else {
+        // Keep API shape stable for unknown municipality keys: return empty result set.
+        where.push("1 = 0");
+      }
     }
 
     if (q) {
@@ -658,7 +784,10 @@ app.post("/api/scrape/tirana/vendime", async (req, res) => {
   try {
     const municipalityName = "Tiranë";
     const category = "Vendime";
-    const year = Number(req.query.year || 2026);
+    const year = parseYear(req.query.year, new Date().getUTCFullYear());
+    if (year === null) {
+      return badRequest(res, "Invalid year. year must be an integer between 2000 and 2100.");
+    }
     const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 50));
 
     const municipalityId = await getMunicipalityIdByName(municipalityName);
@@ -681,6 +810,8 @@ app.post("/api/scrape/tirana/vendime", async (req, res) => {
     for (const it of result.items) {
       const sourceUrl = makeAbsoluteUrl(result.url, it.source_url);
       if (!sourceUrl) { skipped++; continue; }
+      const sourcePageUrl = makeAbsoluteUrl(result.url, it.source_page_url || result.url);
+      const sourceOrigin = getHost(sourcePageUrl || sourceUrl) || null;
 
       const safeDate = sanitizeISODate(it.published_date || null);
       const dateUnknown = safeDate ? false : true;
@@ -692,7 +823,7 @@ app.post("/api/scrape/tirana/vendime", async (req, res) => {
           municipality_id, category,
           title, title_normalized, summary,
           published_date, date_unknown, date_source,
-          source_url, source_url_missing_reason,
+          source_url, source_page_url, source_origin, source_url_missing_reason,
           collected_at, ingestion_method,
           dedup_key, possible_duplicate,
           status, created_by_user_id
@@ -701,10 +832,10 @@ app.post("/api/scrape/tirana/vendime", async (req, res) => {
           $1, $2,
           $3, $4, NULL,
           $5::date, $6, 'tirana_al_table',
-          $7, NULL,
+          $7, $8, $9, NULL,
           now(), 'scrape',
-          $8, false,
-          'draft', $9
+          $10, false,
+          'draft', $11
         )
         ON CONFLICT (source_url) WHERE source_url IS NOT NULL
         DO NOTHING
@@ -718,6 +849,8 @@ app.post("/api/scrape/tirana/vendime", async (req, res) => {
           safeDate,
           dateUnknown,
           sourceUrl,
+          sourcePageUrl,
+          sourceOrigin,
           dedupKey,
           systemUserId,
         ]
@@ -740,7 +873,11 @@ app.post("/api/scrape/tirana/vendime", async (req, res) => {
       next: "Next: use /api/scrape/run (registry-driven).",
     });
   } catch (err) {
-    res.status(500).json({ ok: false, error: "scrape_error", message: err.message });
+    res.status(500).json({
+      ok: false,
+      error: "scrape_error",
+      message: safePublicErrorMessage(err, "Scrape failed"),
+    });
   }
 });
 
@@ -760,7 +897,10 @@ app.post("/api/scrape/run", async (req, res) => {
       String(req.query.force_publish || "").trim().toLowerCase()
     );
   const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 50));
-  const year = Number(req.query.year || 2026);
+  const year = parseYear(req.query.year, new Date().getUTCFullYear());
+  if (year === null) {
+    return badRequest(res, "Invalid year. year must be an integer between 2000 and 2100.");
+  }
 
   let municipalityId = null;
   let registryRow = null;
@@ -860,7 +1000,11 @@ app.post("/api/scrape/run", async (req, res) => {
         let scrapedItems = [];
 
         const host = getHost(targetUrl);
-        if (host.endsWith("tirana.al")) {
+        if (host === "vendime.al" || host === "www.vendime.al") {
+          const r = await scrapeVendimeAl({ url: targetUrl, year, limit });
+          usedUrl = r.url;
+          scrapedItems = r.items;
+        } else if (host.endsWith("tirana.al")) {
           const r = await scrapeTiranaVendime({ year, limit, urlOverride: targetUrl });
           usedUrl = r.url;
           scrapedItems = r.items;
@@ -871,10 +1015,9 @@ app.post("/api/scrape/run", async (req, res) => {
         }
 
         // auto-publish if registry already CHECKED, or allow explicit forced publish for one-off runs.
-        const defaultStatus =
-          forcePublish || registryRow.verification_status === "CHECKED"
-            ? "published"
-            : "draft";
+        const shouldPublish =
+          forcePublish || registryRow.verification_status === "CHECKED";
+        const defaultStatus = shouldPublish ? "published" : "draft";
 
         // insert items
         let inserted = 0;
@@ -883,6 +1026,8 @@ app.post("/api/scrape/run", async (req, res) => {
         let skipped_missing_url = 0;
         let parsed_kept = 0;
         let sample_kept_title = null;
+        const keptUrls = [];
+        let publishedUpdated = 0;
 
         for (const it of scrapedItems) {
           const title = it.title || "";
@@ -890,6 +1035,9 @@ app.post("/api/scrape/run", async (req, res) => {
           const published_date = sanitizeISODate(published_date_raw);
 
           const sourceUrl = makeAbsoluteUrl(usedUrl || targetUrl, it.source_url);
+          const sourcePageUrl = makeAbsoluteUrl(usedUrl || targetUrl, it.source_page_url || usedUrl || targetUrl);
+          const sourceOrigin =
+            String(it.source_origin || "").trim() || getHost(sourcePageUrl || sourceUrl) || null;
           if (!sourceUrl) {
             skipped++;
             skipped_missing_url++;
@@ -904,6 +1052,7 @@ app.post("/api/scrape/run", async (req, res) => {
 
           parsed_kept++;
           if (!sample_kept_title) sample_kept_title = title;
+          keptUrls.push(sourceUrl);
 
           const dateUnknown = published_date ? false : true;
           const dedupKey = `vendime|${municipalityId}|${it.number || ""}|${sourceUrl || ""}`;
@@ -914,7 +1063,7 @@ app.post("/api/scrape/run", async (req, res) => {
               municipality_id, category,
               title, title_normalized, summary,
               published_date, date_unknown, date_source,
-              source_url, source_url_missing_reason,
+              source_url, source_page_url, source_origin, source_url_missing_reason,
               collected_at, ingestion_method,
               dedup_key, possible_duplicate,
               status, created_by_user_id
@@ -923,10 +1072,10 @@ app.post("/api/scrape/run", async (req, res) => {
               $1, $2,
               $3, $4, NULL,
               $5::date, $6, 'scrape_registry',
-              $7, NULL,
+              $7, $8, $9, NULL,
               now(), 'scrape',
-              $8, false,
-              $9, $10
+              $10, false,
+              $11, $12
             )
             ON CONFLICT (source_url) WHERE source_url IS NOT NULL
             DO NOTHING
@@ -940,6 +1089,8 @@ app.post("/api/scrape/run", async (req, res) => {
               published_date,
               dateUnknown,
               sourceUrl,
+              sourcePageUrl,
+              sourceOrigin,
               dedupKey,
               defaultStatus,
               systemUserId,
@@ -948,6 +1099,22 @@ app.post("/api/scrape/run", async (req, res) => {
 
           if (ins.rowCount === 1) inserted++;
           else skipped++;
+        }
+
+        if (shouldPublish && keptUrls.length > 0) {
+          const publishUpdate = await pool.query(
+            `
+            UPDATE items
+            SET status = 'published',
+                updated_at = now()
+            WHERE municipality_id = $1
+              AND category = $2
+              AND status <> 'published'
+              AND source_url = ANY($3::text[])
+            `,
+            [municipalityId, "Vendime", keptUrls]
+          );
+          publishedUpdated = publishUpdate.rowCount;
         }
 
         // success update
@@ -973,7 +1140,9 @@ app.post("/api/scrape/run", async (req, res) => {
           parsed_rows_total: scrapedItems.length,
           parsed_rows_kept: parsed_kept,
           force_publish: forcePublish,
+          should_publish: shouldPublish,
           inserted,
+          published_updated: publishedUpdated,
           skipped,
           skipped_missing_url,
           skipped_not_vendim,
@@ -1059,10 +1228,18 @@ app.post("/api/scrape/run", async (req, res) => {
       );
     }
 
-    return res.status(controlledFailure ? 200 : 500).json({
+    const statusCode = (() => {
+      if (errorType === "HTTP_403") return 502;
+      if (errorType === "TIMEOUT") return 504;
+      if (errorType === "UPSTREAM_DOWN") return 502;
+      if (errorType.startsWith("HTTP_")) return 502;
+      return controlledFailure ? 502 : 500;
+    })();
+
+    return res.status(statusCode).json({
       ok: false,
       error: "scrape_error",
-      message: String(err?.message || err),
+      message: safePublicErrorMessage(err, "Scrape failed"),
       scrape_error:
         errorType === "TIMEOUT"
           ? `Timeout: ${err?.timeout_label || "scrape job"}`

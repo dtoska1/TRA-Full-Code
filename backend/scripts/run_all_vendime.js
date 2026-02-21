@@ -61,8 +61,14 @@ async function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
-async function postJson(url) {
-  const res = await fetch(url, { method: 'POST', headers: { 'Accept': 'application/json' } });
+async function postJson(url, adminToken) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      Authorization: `Bearer ${adminToken}`,
+    },
+  });
   const text = await res.text();
   let data = null;
   try { data = JSON.parse(text); } catch { data = { ok: false, error: 'non_json_response', raw: text }; }
@@ -88,6 +94,11 @@ async function main() {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
     console.error('ERROR: DATABASE_URL env var is not set.');
+    process.exit(1);
+  }
+  const adminToken = String(process.env.ADMIN_TOKEN || '').trim();
+  if (!adminToken) {
+    console.error('ERROR: ADMIN_TOKEN env var is not set.');
     process.exit(1);
   }
 
@@ -195,7 +206,7 @@ async function main() {
       }
 
       try {
-        const data = await postJson(url.toString());
+        const data = await postJson(url.toString(), adminToken);
         results.push({
           municipality: j.municipality_name,
           municipality_id: j.municipality_id,

@@ -1,0 +1,245 @@
+diff --git a/backend/.env.example b/backend/.env.example
+index 91006f1..fe48ba7 100644
+--- a/backend/.env.example
++++ b/backend/.env.example
+@@ -7,3 +7,9 @@ HTTP_403_COOLDOWN_MINUTES=10080
+ SCRAPE_JOB_TIMEOUT_MS=90000
+ SCRAPE_REQUEST_TIMEOUT_MS=20000
+ MAX_CLOUDFLARE_REDIRECTS=2
++# Security
++PUBLIC_ORIGINS=http://localhost:3000
++ADMIN_TOKEN=__SET_ME_STRONG_RANDOM__
++TRUST_PROXY=0
++API_RATE_LIMIT_MAX=120
++SCRAPE_RATE_LIMIT_MAX=10
+diff --git a/backend/index.js b/backend/index.js
+index eefb3bd..2ff8e1e 100644
+--- a/backend/index.js
++++ b/backend/index.js
+@@ -25,6 +25,19 @@ const { scrapeGenericDocuments } = require("./scrapers/genericDocuments");
+ console.log("LOADED INDEX.JS FROM:", __filename);
+ 
+ const app = express();
++app.disable("x-powered-by");
++
++const NODE_ENV = String(process.env.NODE_ENV || "development").toLowerCase();
++const ADMIN_TOKEN = String(process.env.ADMIN_TOKEN || "").trim();
++const PUBLIC_ORIGINS = String(process.env.PUBLIC_ORIGINS || "")
++  .split(",")
++  .map((s) => s.trim())
++  .filter(Boolean);
++
++if (NODE_ENV === "production" && !ADMIN_TOKEN) {
++  console.error("Missing required env var ADMIN_TOKEN in production.");
++  process.exit(1);
++}
+ 
+ // If deployed behind a reverse proxy/load balancer, set TRUST_PROXY=1.
+ if (String(process.env.TRUST_PROXY || "") === "1") {
+@@ -34,10 +47,46 @@ if (String(process.env.TRUST_PROXY || "") === "1") {
+ // --------------------
+ // Middleware
+ // --------------------
+-app.use(cors());
++const originAllowlist = new Set(PUBLIC_ORIGINS);
++
++app.use(
++  cors({
++    origin(origin, cb) {
++      // Allow non-browser clients (curl, server-to-server) which do not send Origin.
++      if (!origin) return cb(null, true);
++
++      // If no allowlist configured, default to localhost-only in development.
++      if (originAllowlist.size === 0) {
++        if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin)) {
++          return cb(null, true);
++        }
++        return cb(new Error("CORS blocked: origin not allowed"), false);
++      }
++
++      if (originAllowlist.has(origin)) return cb(null, true);
++      return cb(new Error("CORS blocked: origin not allowed"), false);
++    },
++    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
++    allowedHeaders: ["Content-Type", "Authorization", "X-Admin-Token"],
++    maxAge: 86400,
++  })
++);
++
++// Return JSON for CORS rejections instead of the default HTML error.
++app.use((err, req, res, next) => {
++  if (err && String(err.message || "").toLowerCase().includes("cors blocked")) {
++    return res.status(403).json({
++      ok: false,
++      error: "cors_blocked",
++      message: "Origin not allowed.",
++    });
++  }
++  return next(err);
++});
++
+ app.use(helmet());
+-app.use(express.json());
+-app.use(morgan("dev"));
++app.use(express.json({ limit: "1mb" }));
++app.use(morgan(NODE_ENV === "production" ? "combined" : "dev"));
+ 
+ const apiLimiter = rateLimit({
+   windowMs: 60 * 1000,
+@@ -51,6 +100,45 @@ const apiLimiter = rateLimit({
+   },
+ });
+ app.use("/api", apiLimiter);
++const scrapeLimiter = rateLimit({
++  windowMs: 60 * 1000,
++  max: Number(process.env.SCRAPE_RATE_LIMIT_MAX || 10),
++  standardHeaders: true,
++  legacyHeaders: false,
++  message: {
++    ok: false,
++    error: "rate_limited",
++    message: "Too many scrape requests, please try again later.",
++  },
++});
++app.use("/api/scrape", scrapeLimiter);
++
++function requireAdmin(req, res, next) {
++  if (!ADMIN_TOKEN) {
++    return res.status(503).json({
++      ok: false,
++      error: "server_misconfigured",
++      message: "ADMIN_TOKEN is not configured on the server.",
++    });
++  }
++
++  const auth = String(req.headers.authorization || "");
++  const bearer = auth.toLowerCase().startsWith("bearer ") ? auth.slice(7).trim() : "";
++  const headerToken = String(req.headers["x-admin-token"] || "").trim();
++  const token = bearer || headerToken;
++
++  if (token && token === ADMIN_TOKEN) return next();
++
++  return res.status(401).json({
++    ok: false,
++    error: "unauthorized",
++    message: "Missing or invalid admin token.",
++  });
++}
++
++// Lock down admin surfaces.
++app.use("/api/scrape", requireAdmin);
++app.use("/api/debug", requireAdmin);
+ 
+ // Always declare UTF-8 JSON (API responses)
+ app.use((req, res, next) => {
+@@ -189,13 +277,9 @@ async function checkMeiliHealth() {
+   const host = process.env.MEILI_HOST;
+   if (!host) throw new Error("MEILI_HOST is not set");
+ 
+-  const headers = {};
+-  if (process.env.MEILI_MASTER_KEY) {
+-    headers.Authorization = `Bearer ${process.env.MEILI_MASTER_KEY}`;
+-  }
+-
++  // /health does not require auth; do not send privileged keys over the wire.
+   const response = await withTimeout(
+-    fetch(`${host.replace(/\/+$/, "")}/health`, { headers }),
++    fetch(`${host.replace(/\/+$/, "")}/health`),
+     1500,
+     "Meilisearch health check timed out after 1500ms"
+   );
+@@ -238,6 +322,13 @@ function parsePositiveInt(value, fallback) {
+   return n;
+ }
+ 
++function parseYear(value, fallback) {
++  if (value === undefined || value === null || value === "") return fallback;
++  const n = Number(String(value).trim());
++  if (!Number.isInteger(n) || n < 2000 || n > 2100) return null;
++  return n;
++}
++
+ function badRequest(res, message) {
+   return res.status(400).json({
+     ok: false,
+@@ -252,7 +343,8 @@ function safePublicErrorMessage(err, fallbackMessage) {
+ 
+   const redacted = raw
+     .replace(/postgres:\/\/[^@\s]+@/gi, "postgres://***@")
+-    .replace(/password=[^\s]+/gi, "password=***");
++    .replace(/password=[^\s]+/gi, "password=***")
++    .replace(/bearer\s+[A-Za-z0-9\-\._~\+\/]+=*/gi, "bearer ***");
+ 
+   return redacted.length > 200 ? fallbackMessage : redacted;
+ }
+@@ -362,7 +454,11 @@ function sanitizeISODate(s) {
+ 
+ 
+ async function getMunicipalityId({ municipality, municipality_id }) {
+-  if (municipality_id) return municipality_id;
++  if (municipality_id !== undefined && municipality_id !== null && String(municipality_id).trim() !== "") {
++    const n = Number(String(municipality_id).trim());
++    if (!Number.isInteger(n) || n < 1) return null;
++    return n;
++  }
+   if (!municipality) return null;
+ 
+   const key = toNameKey(municipality);
+@@ -658,7 +754,10 @@ app.post("/api/scrape/tirana/vendime", async (req, res) => {
+   try {
+     const municipalityName = "Tiranë";
+     const category = "Vendime";
+-    const year = Number(req.query.year || 2026);
++    const year = parseYear(req.query.year, new Date().getUTCFullYear());
++    if (year === null) {
++      return badRequest(res, "Invalid year. year must be an integer between 2000 and 2100.");
++    }
+     const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 50));
+ 
+     const municipalityId = await getMunicipalityIdByName(municipalityName);
+@@ -740,7 +839,11 @@ app.post("/api/scrape/tirana/vendime", async (req, res) => {
+       next: "Next: use /api/scrape/run (registry-driven).",
+     });
+   } catch (err) {
+-    res.status(500).json({ ok: false, error: "scrape_error", message: err.message });
++    res.status(500).json({
++      ok: false,
++      error: "scrape_error",
++      message: safePublicErrorMessage(err, "Scrape failed"),
++    });
+   }
+ });
+ 
+@@ -760,7 +863,10 @@ app.post("/api/scrape/run", async (req, res) => {
+       String(req.query.force_publish || "").trim().toLowerCase()
+     );
+   const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 50));
+-  const year = Number(req.query.year || 2026);
++  const year = parseYear(req.query.year, new Date().getUTCFullYear());
++  if (year === null) {
++    return badRequest(res, "Invalid year. year must be an integer between 2000 and 2100.");
++  }
+ 
+   let municipalityId = null;
+   let registryRow = null;
+@@ -1059,10 +1165,18 @@ app.post("/api/scrape/run", async (req, res) => {
+       );
+     }
+ 
+-    return res.status(controlledFailure ? 200 : 500).json({
++    const statusCode = (() => {
++      if (errorType === "HTTP_403") return 502;
++      if (errorType === "TIMEOUT") return 504;
++      if (errorType === "UPSTREAM_DOWN") return 502;
++      if (errorType.startsWith("HTTP_")) return 502;
++      return controlledFailure ? 502 : 500;
++    })();
++
++    return res.status(statusCode).json({
+       ok: false,
+       error: "scrape_error",
+-      message: String(err?.message || err),
++      message: safePublicErrorMessage(err, "Scrape failed"),
+       scrape_error:
+         errorType === "TIMEOUT"
+           ? `Timeout: ${err?.timeout_label || "scrape job"}`

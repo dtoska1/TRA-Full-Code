@@ -85,10 +85,13 @@ function classifyOutcome(result) {
   return "other_error";
 }
 
-async function postJson(url) {
+async function postJson(url, adminToken) {
   const res = await fetch(url, {
     method: "POST",
-    headers: { Accept: "application/json" },
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${adminToken}`,
+    },
   });
 
   const text = await res.text();
@@ -111,6 +114,11 @@ async function main() {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
     console.error("ERROR: DATABASE_URL is not set.");
+    process.exit(1);
+  }
+  const adminToken = String(process.env.ADMIN_TOKEN || "").trim();
+  if (!adminToken) {
+    console.error("ERROR: ADMIN_TOKEN is not set.");
     process.exit(1);
   }
 
@@ -220,7 +228,7 @@ async function main() {
       }
 
       try {
-        const response = await postJson(url.toString());
+        const response = await postJson(url.toString(), adminToken);
 
         if (!response.okHttp) {
           line.last_error_type = extractErrorType(response.data);
