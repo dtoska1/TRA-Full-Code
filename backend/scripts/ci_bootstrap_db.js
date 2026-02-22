@@ -11,6 +11,8 @@ const SQL_FILES = [
   "004_name_key_trigger.sql",
   "005_seed_municipalities.sql",
   "006_seed_source_registry.sql",
+  "014_municipality_key_aliases.sql",
+  "015_vendime_al_canonical_and_item_provenance.sql",
 ];
 
 function sanitizeSql(sqlText) {
