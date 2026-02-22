@@ -357,6 +357,23 @@ Prokurime v1 scope:
   - fallback: `https://www.app.gov.al/export-public-calls/`
 - Municipality matching is conservative (`Bashkia <X>` / `Municipality of <X>`). Unclear rows are skipped and counted in `skipped_no_municipality_match`.
 
+### Finish Prokurime baseline (nationwide, resumable)
+
+Use the dedicated nationwide runner (local only; do not run in CI):
+
+```bash
+node backend/scripts/run_prokurime_nationwide.js --year=2024 --limit=500 --start_offset=0
+```
+
+How it works:
+
+- Calls `POST /api/scrape/run?category=Prokurime&year=YYYY&offset=...&limit=...` on `http://localhost:5050` by default with `Authorization: Bearer <ADMIN_TOKEN>`.
+- Writes chunk progress to `backend/tmp/prokurime_progress_YYYY.json` after every chunk.
+- Optional base URL override: set `API_BASE` (or `SMOKE_BASE_URL`) before running if your local API is not on the default host/port.
+- Resume automatically: rerun the same command **without** `--start_offset` and it continues from `next_offset` in the progress file.
+- If a chunk times out or is too heavy, reduce `--limit` (for example `--limit=200`) and rerun.
+- The run completes when `next_offset` becomes `null`.
+
 Offline parser test (fixtures only):
 
 ```bash
