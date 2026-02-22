@@ -122,11 +122,18 @@ npm run dev
 Open:
 
 - `http://localhost:3000/status`
+- `http://localhost:3000/coverage` (admin token required)
 
 Frontend env:
 
 - Copy `frontend/.env.example` to `frontend/.env.local` (optional for local dev).
 - Default API base is `http://localhost:5050` via `NEXT_PUBLIC_API_BASE_URL`.
+
+Coverage UI token handling:
+
+- Token is entered manually in the browser.
+- Token is kept in memory only (not saved in localStorage/sessionStorage).
+- Use the **Clear token** button to drop it from memory.
 
 ### 7) Verify health/readiness checks
 
@@ -223,6 +230,7 @@ Backend API protections now include:
 - Parameterized SQL queries (`$1`, `$2`, ...) for route-side DB access.
 - Input validation on `/api/feed` (`page`, `limit`, `municipality`, `q`).
 - Basic rate limiting on `/api/*` to reduce abuse bursts.
+- Admin-token protection on `/api/scrape/*`, `/api/debug/*`, and `/api/admin/coverage`.
 
 Quick validation checks (should return HTTP 400 with `{"ok":false,"error":"bad_request","message":"..."}`):
 
@@ -231,7 +239,19 @@ curl.exe -i "http://localhost:5050/api/feed?page=0"
 curl.exe -i "http://localhost:5050/api/feed?limit=999"
 curl.exe -i "http://localhost:5050/api/feed?municipality=tirane!!"
 curl.exe -i "http://localhost:5050/api/feed?q=   "
+curl.exe -i "http://localhost:5050/api/admin/coverage"
 ```
+
+Admin coverage endpoint checks:
+
+```powershell
+curl.exe -i "http://localhost:5050/api/admin/coverage"
+curl.exe -i "http://localhost:5050/api/admin/coverage" -H "Authorization: Bearer <ADMIN_TOKEN>"
+```
+
+Expected:
+- without token: HTTP `401`
+- with token: HTTP `200` and coverage payload
 
 ### 9) Run one end-to-end scraper first (Tirane Vendime)
 
@@ -303,6 +323,20 @@ Resume behavior:
 - Set `--resume=false` to ignore previous progress and run all municipalities again.
 - If `--stop_on_error=true`, the script stops immediately on first failure and keeps progress on disk.
 
+Registry category batch runner (Vendime / Prokurime / Konsultime):
+
+```bash
+cd backend
+npm run run:batch:registry -- --category="Konsultime publike" --year=2025 --limit=20 --batch=5
+```
+
+Shortcut for Konsultime:
+
+```bash
+cd backend
+npm run run:batch:konsultime -- --year=2025 --limit=20 --batch=5
+```
+
 Manual localhost test with `curl.exe`:
 
 ```powershell
@@ -316,9 +350,24 @@ curl.exe -X POST "http://localhost:5050/api/scrape/run?municipality=tirane&categ
 curl.exe -X POST "http://localhost:5050/api/scrape/run?municipality=tirane&category=Konsultime%20publike&year=2024&limit=10" -H "Authorization: Bearer <ADMIN_TOKEN>" -H "Accept: application/json"
 ```
 
+Prokurime v1 scope:
+
+- Baseline source is APP annual export CSV discovered from APP export pages:
+  - `https://www.app.gov.al/eksportimi-i-procedurave-te-publikuara/`
+  - fallback: `https://www.app.gov.al/export-public-calls/`
+- Municipality matching is conservative (`Bashkia <X>` / `Municipality of <X>`). Unclear rows are skipped and counted in `skipped_no_municipality_match`.
+
+Offline parser test (fixtures only):
+
+```bash
+cd backend
+npm run test:prokurime-app
+```
+
 Expected response counters for year-filtered runs:
 - `skipped_missing_date`
 - `skipped_wrong_year`
+- `skipped_no_municipality_match` (Prokurime)
 
 ## Next “must do” items for a public-ready v1
 

@@ -16,6 +16,7 @@ const dns = require("dns");
 const net = require("net");
 const crypto = require("crypto");
 const { fetchVendimeStatusSummary } = require("./lib/vendimeStatus");
+const { fetchCoverageSummary } = require("./lib/coverageStatus");
 
 // Make Node prefer IPv4 first (helps on some Windows setups)
 dns.setDefaultResultOrder("ipv4first");
@@ -24,6 +25,7 @@ dns.setDefaultResultOrder("ipv4first");
 const { scrapeTiranaVendime } = require("./scrapers/tiranaVendime");
 const { scrapeGenericDocuments } = require("./scrapers/genericDocuments");
 const { scrapeVendimeAl } = require("./scrapers/vendimeAl");
+const { scrapeProkurimeAppExport } = require("./scrapers/prokurimeAppExport");
 
 console.log("LOADED INDEX.JS FROM:", __filename);
 
@@ -959,6 +961,43 @@ async function getMunicipalityNameKeyById(municipalityId) {
   return r.rowCount ? r.rows[0].name_key : null;
 }
 
+async function getMunicipalityMatchContext(municipalityId) {
+  const municipalityResult = await pool.query(
+    `
+    SELECT lower(name_key) AS name_key, name_sq
+    FROM municipalities
+    WHERE id = $1
+    LIMIT 1
+    `,
+    [municipalityId]
+  );
+  if (!municipalityResult.rowCount) return null;
+
+  const municipalityRow = municipalityResult.rows[0];
+  let aliasKeys = [];
+  if (await hasMunicipalityKeyAliasesTable()) {
+    const aliasResult = await pool.query(
+      `
+      SELECT lower(alias_key) AS alias_key
+      FROM municipality_key_aliases
+      WHERE municipality_id = $1
+      ORDER BY alias_key ASC
+      `,
+      [municipalityId]
+    );
+    aliasKeys = aliasResult.rows
+      .map((row) => String(row.alias_key || "").trim())
+      .filter(Boolean);
+  }
+
+  return {
+    municipalityId,
+    nameKey: String(municipalityRow.name_key || "").trim(),
+    nameSq: String(municipalityRow.name_sq || "").trim(),
+    aliasKeys,
+  };
+}
+
 async function getSystemUserId() {
   await pool.query(
     `INSERT INTO users (email, display_name)
@@ -1448,6 +1487,7 @@ app.get("/", (req, res) => {
       "/health",
       "/api/debug/db-encoding",
       "/api/municipalities",
+      "/api/admin/coverage",
       "/api/feed",
       "/api/scrape/tirana/vendime",
       "/api/scrape/run",
@@ -1533,6 +1573,19 @@ app.get("/api/municipalities", async (req, res) => {
 app.get("/api/status/vendime", async (req, res) => {
   try {
     const summary = await fetchVendimeStatusSummary(pool);
+    res.json(summary);
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      error: "db_error",
+      message: safePublicErrorMessage(err, "Database operation failed"),
+    });
+  }
+});
+
+app.get("/api/admin/coverage", requireAdmin, async (req, res) => {
+  try {
+    const summary = await fetchCoverageSummary(pool);
     res.json(summary);
   } catch (err) {
     res.status(500).json({
@@ -1858,21 +1911,21 @@ app.post("/api/scrape/run", async (req, res) => {
       });
     }
 
+    const isProkurimeCategory = category === "Prokurime";
     const registryUrlColumn = getRegistryUrlColumnForCategory(category);
-    let baselineTargetUrl = applyYearTemplate(
-      (registryUrlColumn ? registryRow[registryUrlColumn] : null) || null,
-      year
-    );
+    let baselineTargetUrl = isProkurimeCategory
+      ? null
+      : applyYearTemplate((registryUrlColumn ? registryRow[registryUrlColumn] : null) || null, year);
 
     // fallback only for Tirana if vendime_url missing (debug convenience)
-    if (category === "Vendime" && !baselineTargetUrl) {
+    if (!isProkurimeCategory && category === "Vendime" && !baselineTargetUrl) {
       const tiranaId = await getTiranaId();
       if (tiranaId && municipalityId === tiranaId) {
         baselineTargetUrl = `https://tirana.al/kategoria-e-publikimit/vendime-te-keshillit-bashkiak-${year}-4290`;
       }
     }
 
-    if (!baselineTargetUrl) {
+    if (!isProkurimeCategory && !baselineTargetUrl) {
       await pool.query(
         `
         UPDATE source_registry
@@ -1908,7 +1961,196 @@ app.post("/api/scrape/run", async (req, res) => {
       [registryRow.id, nextBuckets]
     );
 
-    if (category !== "Vendime") {
+    if (category === "Prokurime") {
+      const successPayload = await withTimeout(
+        (async () => {
+          const systemUserId = await getSystemUserId();
+          const municipalityMatchContext = await getMunicipalityMatchContext(municipalityId);
+          if (!municipalityMatchContext) {
+            throw new Error("Municipality context not found.");
+          }
+
+          const baselineResult = await scrapeProkurimeAppExport({
+            year,
+            limit,
+            municipalityContext: municipalityMatchContext,
+            requestTimeoutMs: SCRAPE_REQUEST_TIMEOUT_MS,
+          });
+          const baselineSummary = {
+            used_url: baselineResult.meta?.source_page_url || baselineResult.url || null,
+            export_csv_url: baselineResult.meta?.export_csv_url || null,
+            parsed_rows_total: Number(baselineResult.meta?.rows_total || baselineResult.items.length),
+            rows_matched: Number(baselineResult.meta?.rows_matched || 0),
+            skipped_no_municipality_match: Number(
+              baselineResult.meta?.skipped_no_municipality_match || 0
+            ),
+            kept: 0,
+            inserted: 0,
+            updated: 0,
+            skipped: 0,
+            skipped_missing_date: 0,
+            skipped_wrong_year: 0,
+          };
+
+          const shouldPublish =
+            forcePublish || registryRow.verification_status === "CHECKED";
+          const defaultStatus = shouldPublish ? "published" : "draft";
+
+          let inserted = 0;
+          let updated = 0;
+          let skipped = 0;
+          let skipped_missing_date = 0;
+          let skipped_wrong_year = 0;
+          let skipped_missing_url = 0;
+          let parsed_kept = 0;
+          let sample_kept_title = null;
+          const keptDedupKeys = new Set();
+          const skipped_no_municipality_match = Number(
+            baselineResult.meta?.skipped_no_municipality_match || 0
+          );
+
+          for (const it of baselineResult.items) {
+            const title = it.title || "";
+            const published_date = sanitizeISODate(it.published_date || null);
+            const itemBaseUrl =
+              String(it.source_page_url || "").trim() ||
+              String(baselineResult.meta?.source_page_url || "").trim() ||
+              String(baselineResult.meta?.export_csv_url || "").trim();
+            const sourceUrl = makeAbsoluteUrl(itemBaseUrl, it.source_url);
+            const sourcePageUrl = makeAbsoluteUrl(itemBaseUrl, it.source_page_url || itemBaseUrl);
+            const sourceOrigin = String(it.source_origin || "").trim() || "app.gov.al";
+
+            if (!sourceUrl) {
+              skipped += 1;
+              skipped_missing_url += 1;
+              baselineSummary.skipped += 1;
+              continue;
+            }
+
+            if (yearFilterRequested) {
+              if (!published_date) {
+                skipped += 1;
+                skipped_missing_date += 1;
+                baselineSummary.skipped += 1;
+                baselineSummary.skipped_missing_date += 1;
+                continue;
+              }
+
+              const itemYear = Number.parseInt(String(published_date).slice(0, 4), 10);
+              if (!Number.isFinite(itemYear) || itemYear !== year) {
+                skipped += 1;
+                skipped_wrong_year += 1;
+                baselineSummary.skipped += 1;
+                baselineSummary.skipped_wrong_year += 1;
+                continue;
+              }
+            }
+
+            parsed_kept += 1;
+            baselineSummary.kept += 1;
+            if (!sample_kept_title) sample_kept_title = title;
+
+            const titleNormalized = it.title_normalized || normalizeTitle(title);
+            const dedupKey = dedupKeyRegistryDocumentV1({
+              municipalityId,
+              category,
+              publishedDate: published_date,
+              title,
+              titleNormalized,
+              sourceUrl,
+            });
+            keptDedupKeys.add(dedupKey);
+
+            const action = await upsertRegistryDocumentItem({
+              municipalityId,
+              category,
+              title,
+              titleNormalized,
+              publishedDate: published_date,
+              sourceUrl,
+              sourcePageUrl,
+              sourceOrigin,
+              dedupKey,
+              shouldPublish,
+              defaultStatus,
+              systemUserId,
+            });
+
+            if (action === "inserted") {
+              inserted += 1;
+              baselineSummary.inserted += 1;
+            } else if (action === "updated") {
+              updated += 1;
+              baselineSummary.updated += 1;
+            } else {
+              skipped += 1;
+              baselineSummary.skipped += 1;
+            }
+          }
+
+          let publishedUpdated = 0;
+          if (shouldPublish && keptDedupKeys.size > 0) {
+            const keptKeys = Array.from(keptDedupKeys);
+            const publishUpdate = await pool.query(
+              `
+              UPDATE items
+              SET status = 'published',
+                  updated_at = now()
+              WHERE municipality_id = $1
+                AND category = $2
+                AND status <> 'published'
+                AND dedup_key = ANY($3::text[])
+              `,
+              [municipalityId, category, keptKeys]
+            );
+            publishedUpdated = publishUpdate.rowCount;
+          }
+
+          await pool.query(
+            `
+            UPDATE source_registry
+            SET
+              last_seen_utc = now(),
+              last_error_type = NULL,
+              cooldown_until_utc = NULL
+            WHERE id = $1
+            `,
+            [registryRow.id]
+          );
+
+          return {
+            ok: true,
+            municipality: municipality || municipalityId,
+            municipality_id: municipalityId,
+            category,
+            used_registry_id: registryRow.id,
+            scraped_from: baselineSummary.used_url || baselineSummary.export_csv_url || null,
+            parsed_rows_total: baselineSummary.parsed_rows_total,
+            parsed_rows_kept: parsed_kept,
+            force_publish: forcePublish,
+            should_publish: shouldPublish,
+            page_start: pageStart,
+            inserted,
+            updated,
+            published_updated: publishedUpdated,
+            skipped,
+            skipped_missing_url,
+            skipped_missing_date,
+            skipped_wrong_year,
+            skipped_no_municipality_match,
+            baseline: baselineSummary,
+            sample_title: sample_kept_title || baselineResult.items[0]?.title || null,
+            next: "Next: verify /api/feed returns this municipality/category.",
+          };
+        })(),
+        SCRAPE_JOB_TIMEOUT_MS,
+        `scrape municipality ${municipalityId} category ${category}`
+      );
+
+      return res.json(successPayload);
+    }
+
+    if (category === "Konsultime publike") {
       const successPayload = await withTimeout(
         (async () => {
           const systemUserId = await getSystemUserId();
@@ -2237,6 +2479,7 @@ app.post("/api/scrape/run", async (req, res) => {
             skipped_wrong_year,
             skipped_no_year_keyword,
             skipped_no_year_source_policy,
+            skipped_no_municipality_match: 0,
             baseline: baselineSummary,
             fallback:
               category === "Konsultime publike" && fallbackSummary.attempted
@@ -2572,6 +2815,7 @@ app.post("/api/scrape/run", async (req, res) => {
           skipped_wrong_year,
           skipped_not_vendim,
           skipped_not_municipality,
+          skipped_no_municipality_match: 0,
           baseline: baselineSummary,
           official: officialSummary,
           sample_title: sample_kept_title || mergedScrapedItems[0]?.title || null,

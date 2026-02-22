@@ -12,7 +12,7 @@ export default function HomePage() {
           Track ingestion health and upcoming public feed views in one place.
         </p>
 
-        <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-3">
           <Link
             href="/status"
             className="inline-flex items-center justify-center rounded-xl bg-slate-900 px-5 py-3 text-base font-semibold text-white"
@@ -24,6 +24,12 @@ export default function HomePage() {
             className="inline-flex items-center justify-center rounded-xl border border-slate-300 bg-slate-50 px-5 py-3 text-base font-medium text-slate-700"
           >
             Municipality Feed
+          </Link>
+          <Link
+            href="/coverage"
+            className="inline-flex items-center justify-center rounded-xl border border-slate-300 bg-slate-50 px-5 py-3 text-base font-medium text-slate-700"
+          >
+            Admin Coverage
           </Link>
         </div>
       </div>

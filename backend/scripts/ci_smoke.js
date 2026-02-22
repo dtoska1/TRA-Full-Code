@@ -45,10 +45,35 @@ async function run() {
     `POST /api/scrape/run without auth expected 401, got ${scrapeNoAuth.status}`
   );
 
+  const coverageNoAuth = await requestJson("/api/admin/coverage");
+  assert(
+    coverageNoAuth.status === 401,
+    `GET /api/admin/coverage without auth expected 401, got ${coverageNoAuth.status}`
+  );
+
+  const coverageWithAuth = await requestJson("/api/admin/coverage", {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${ADMIN_TOKEN}`,
+    },
+  });
+  assert(
+    coverageWithAuth.status === 200,
+    `GET /api/admin/coverage with auth expected 200, got ${coverageWithAuth.status}`
+  );
+  assert(
+    coverageWithAuth.json && coverageWithAuth.json.ok === true,
+    "GET /api/admin/coverage expected { ok: true }"
+  );
+  assert(
+    Array.isArray(coverageWithAuth.json.items),
+    "GET /api/admin/coverage expected items array"
+  );
+
   const categories = ["Prokurime", "Konsultime publike"];
   for (const category of categories) {
     const path =
-      `/api/scrape/run?municipality=tirane&year=2026&limit=1&category=` +
+      `/api/scrape/run?municipality=tirane&year=1999&limit=1&category=` +
       encodeURIComponent(category);
     const response = await requestJson(path, {
       method: "POST",
@@ -58,8 +83,8 @@ async function run() {
     });
 
     assert(
-      response.status >= 400 && response.status < 500,
-      `POST ${path} expected 4xx, got ${response.status}`
+      response.status === 400,
+      `POST ${path} expected 400 (invalid year), got ${response.status}`
     );
     assert(
       response.json && response.json.error !== "unsupported_category",

@@ -74,6 +74,10 @@ jobs:
           DATABASE_URL: postgres://tra:tra@127.0.0.1:5432/tra
         run: node scripts/ci_bootstrap_db.js
 
+      - name: Run Prokurime APP parser tests (fixtures only)
+        working-directory: backend
+        run: node scripts/test_prokurime_app_export.js
+
       - name: Start Meili health stub
         shell: bash
         run: |
@@ -89,7 +93,7 @@ jobs:
           REDIS_URL: redis://127.0.0.1:6379
           MEILI_HOST: http://127.0.0.1:7700
           MEILI_MASTER_KEY: local-ci-master-key
-          ADMIN_TOKEN: local-ci-admin-token
+          ADMIN_TOKEN: ci-test-token
           PUBLIC_ORIGINS: http://localhost:3000
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
         run: |
@@ -122,7 +126,7 @@ jobs:
         working-directory: backend
         env:
           SMOKE_BASE_URL: http://127.0.0.1:5050
-          ADMIN_TOKEN: local-ci-admin-token
+          ADMIN_TOKEN: ci-test-token
         run: node scripts/ci_smoke.js
 
       - name: Print backend logs on failure
