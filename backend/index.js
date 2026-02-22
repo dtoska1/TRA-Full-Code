@@ -998,6 +998,71 @@ async function getMunicipalityMatchContext(municipalityId) {
   };
 }
 
+async function loadAllMunicipalityMatchContexts() {
+  const municipalityResult = await pool.query(
+    `
+    SELECT id AS municipality_id, lower(name_key) AS name_key, name_sq
+    FROM municipalities
+    ORDER BY lower(name_key) ASC, id ASC
+    `
+  );
+  const aliasByMunicipalityId = new Map();
+  if (await hasMunicipalityKeyAliasesTable()) {
+    const aliasResult = await pool.query(
+      `
+      SELECT municipality_id, lower(alias_key) AS alias_key
+      FROM municipality_key_aliases
+      ORDER BY municipality_id ASC, lower(alias_key) ASC
+      `
+    );
+    for (const row of aliasResult.rows) {
+      const municipalityId = String(row.municipality_id || "").trim();
+      if (!municipalityId) continue;
+      const aliasKey = String(row.alias_key || "").trim();
+      if (!aliasKey) continue;
+      const list = aliasByMunicipalityId.get(municipalityId) || [];
+      list.push(aliasKey);
+      aliasByMunicipalityId.set(municipalityId, list);
+    }
+  }
+
+  const contexts = municipalityResult.rows.map((row) => {
+    const municipalityId = String(row.municipality_id || "").trim();
+    const nameKey = String(row.name_key || "").trim().toLowerCase();
+    const nameSq = String(row.name_sq || "").trim();
+    const aliasKeys = aliasByMunicipalityId.get(municipalityId) || [];
+    return {
+      municipalityId,
+      nameKey,
+      nameSq,
+      aliasKeys,
+    };
+  });
+
+  contexts.sort((a, b) => {
+    if (a.nameKey < b.nameKey) return -1;
+    if (a.nameKey > b.nameKey) return 1;
+    return String(a.municipalityId || "").localeCompare(String(b.municipalityId || ""));
+  });
+  return contexts;
+}
+
+async function loadCheckedPrimaryRegistryMunicipalityIds() {
+  const result = await pool.query(
+    `
+    SELECT municipality_id
+    FROM source_registry
+    WHERE is_primary = TRUE
+      AND verification_status = 'CHECKED'
+    `
+  );
+  return new Set(
+    result.rows
+      .map((row) => String(row.municipality_id || "").trim())
+      .filter(Boolean)
+  );
+}
+
 async function getSystemUserId() {
   await pool.query(
     `INSERT INTO users (email, display_name)
@@ -1877,105 +1942,135 @@ app.post("/api/scrape/run", async (req, res) => {
 
   let municipalityId = null;
   let registryRow = null;
+  const hasMunicipalitySelector =
+    (municipality !== null && String(municipality).trim() !== "") ||
+    (municipality_id !== null && String(municipality_id).trim() !== "");
+  const isProkurimeCategory = category === "Prokurime";
+  let isNationwideProkurime = false;
+  const registryUrlColumn = getRegistryUrlColumnForCategory(category);
+  let baselineTargetUrl = null;
 
   try {
     municipalityId = await getMunicipalityId({ municipality, municipality_id });
-    if (!municipalityId) {
+    if (!isProkurimeCategory && !municipalityId) {
       return res.status(400).json({
         ok: false,
         error: "bad_request",
         message: "Provide municipality (name_key/name_sq) or municipality_id",
       });
     }
-
-    registryRow = await loadRegistryRow(municipalityId);
-    if (!registryRow) {
-      return res.status(404).json({
+    if (isProkurimeCategory && hasMunicipalitySelector && !municipalityId) {
+      return res.status(400).json({
         ok: false,
-        error: "no_registry",
-        message: "No source_registry row found for this municipality",
+        error: "bad_request",
+        message: "Invalid municipality (name_key/name_sq) or municipality_id",
       });
     }
+    isNationwideProkurime = isProkurimeCategory && !municipalityId;
 
-    if (
-      !forceRun &&
-      registryRow.cooldown_until_utc &&
-      new Date(registryRow.cooldown_until_utc) > new Date()
-    ) {
-      return res.status(429).json({
-        ok: false,
-        error: "cooldown",
-        message: "Source is in cooldown",
-        cooldown_until_utc: registryRow.cooldown_until_utc,
-        last_error_type: registryRow.last_error_type || null,
-      });
-    }
-
-    const isProkurimeCategory = category === "Prokurime";
-    const registryUrlColumn = getRegistryUrlColumnForCategory(category);
-    let baselineTargetUrl = isProkurimeCategory
-      ? null
-      : applyYearTemplate((registryUrlColumn ? registryRow[registryUrlColumn] : null) || null, year);
-
-    // fallback only for Tirana if vendime_url missing (debug convenience)
-    if (!isProkurimeCategory && category === "Vendime" && !baselineTargetUrl) {
-      const tiranaId = await getTiranaId();
-      if (tiranaId && municipalityId === tiranaId) {
-        baselineTargetUrl = `https://tirana.al/kategoria-e-publikimit/vendime-te-keshillit-bashkiak-${year}-4290`;
+    if (!isNationwideProkurime) {
+      registryRow = await loadRegistryRow(municipalityId);
+      if (!registryRow) {
+        return res.status(404).json({
+          ok: false,
+          error: "no_registry",
+          message: "No source_registry row found for this municipality",
+        });
       }
-    }
 
-    if (!isProkurimeCategory && !baselineTargetUrl) {
+      if (
+        !forceRun &&
+        registryRow.cooldown_until_utc &&
+        new Date(registryRow.cooldown_until_utc) > new Date()
+      ) {
+        return res.status(429).json({
+          ok: false,
+          error: "cooldown",
+          message: "Source is in cooldown",
+          cooldown_until_utc: registryRow.cooldown_until_utc,
+          last_error_type: registryRow.last_error_type || null,
+        });
+      }
+
+      baselineTargetUrl = isProkurimeCategory
+        ? null
+        : applyYearTemplate((registryUrlColumn ? registryRow[registryUrlColumn] : null) || null, year);
+
+      // fallback only for Tirana if vendime_url missing (debug convenience)
+      if (!isProkurimeCategory && category === "Vendime" && !baselineTargetUrl) {
+        const tiranaId = await getTiranaId();
+        if (tiranaId && municipalityId === tiranaId) {
+          baselineTargetUrl = `https://tirana.al/kategoria-e-publikimit/vendime-te-keshillit-bashkiak-${year}-4290`;
+        }
+      }
+
+      if (!isProkurimeCategory && !baselineTargetUrl) {
+        await pool.query(
+          `
+          UPDATE source_registry
+          SET last_error_type = 'CONFIG_MISSING_URL'
+          WHERE id = $1
+          `,
+          [registryRow.id]
+        );
+
+        return res.status(400).json({
+          ok: false,
+          error: "missing_target_url",
+          message: `${registryUrlColumn || "target_url"} is NULL in source_registry (and no fallback available)`,
+          last_error_type: "CONFIG_MISSING_URL",
+        });
+      }
+
+      // update registry attempt_count + last_checked_utc + hour_buckets_seen (invariants)
+      const bucket = utcHourBucket(startedAt);
+      const nextBuckets = appendHourBucket(registryRow.hour_buckets_seen, bucket);
+
       await pool.query(
         `
         UPDATE source_registry
-        SET last_error_type = 'CONFIG_MISSING_URL'
+        SET
+          attempt_count = attempt_count + 1,
+          first_seen_utc = COALESCE(first_seen_utc, now()),
+          last_checked_utc = now(),
+          hour_buckets_seen = $2,
+          last_error_type = NULL
         WHERE id = $1
         `,
-        [registryRow.id]
+        [registryRow.id, nextBuckets]
       );
-
-      return res.status(400).json({
-        ok: false,
-        error: "missing_target_url",
-        message: `${registryUrlColumn || "target_url"} is NULL in source_registry (and no fallback available)`,
-        last_error_type: "CONFIG_MISSING_URL",
-      });
     }
-
-    // update registry attempt_count + last_checked_utc + hour_buckets_seen (invariants)
-    const bucket = utcHourBucket(startedAt);
-    const nextBuckets = appendHourBucket(registryRow.hour_buckets_seen, bucket);
-
-    await pool.query(
-      `
-      UPDATE source_registry
-      SET
-        attempt_count = attempt_count + 1,
-        first_seen_utc = COALESCE(first_seen_utc, now()),
-        last_checked_utc = now(),
-        hour_buckets_seen = $2,
-        last_error_type = NULL
-      WHERE id = $1
-      `,
-      [registryRow.id, nextBuckets]
-    );
 
     if (category === "Prokurime") {
       const successPayload = await withTimeout(
         (async () => {
           const systemUserId = await getSystemUserId();
-          const municipalityMatchContext = await getMunicipalityMatchContext(municipalityId);
-          if (!municipalityMatchContext) {
-            throw new Error("Municipality context not found.");
+          let baselineResult = null;
+          let checkedPrimaryMunicipalityIds = new Set();
+          if (isNationwideProkurime) {
+            const municipalityContexts = await loadAllMunicipalityMatchContexts();
+            if (!municipalityContexts.length) {
+              throw new Error("No municipality contexts found for nationwide Prokurime run.");
+            }
+            checkedPrimaryMunicipalityIds = await loadCheckedPrimaryRegistryMunicipalityIds();
+            baselineResult = await scrapeProkurimeAppExport({
+              year,
+              limit: null,
+              municipalityContexts,
+              requestTimeoutMs: SCRAPE_REQUEST_TIMEOUT_MS,
+            });
+          } else {
+            const municipalityMatchContext = await getMunicipalityMatchContext(municipalityId);
+            if (!municipalityMatchContext) {
+              throw new Error("Municipality context not found.");
+            }
+            baselineResult = await scrapeProkurimeAppExport({
+              year,
+              limit,
+              municipalityContext: municipalityMatchContext,
+              requestTimeoutMs: SCRAPE_REQUEST_TIMEOUT_MS,
+            });
           }
-
-          const baselineResult = await scrapeProkurimeAppExport({
-            year,
-            limit,
-            municipalityContext: municipalityMatchContext,
-            requestTimeoutMs: SCRAPE_REQUEST_TIMEOUT_MS,
-          });
           const baselineSummary = {
             used_url: baselineResult.meta?.source_page_url || baselineResult.url || null,
             export_csv_url: baselineResult.meta?.export_csv_url || null,
@@ -1991,10 +2086,10 @@ app.post("/api/scrape/run", async (req, res) => {
             skipped_missing_date: 0,
             skipped_wrong_year: 0,
           };
+          const matched_rows_total = Number(baselineSummary.rows_matched || 0);
 
           const shouldPublish =
-            forcePublish || registryRow.verification_status === "CHECKED";
-          const defaultStatus = shouldPublish ? "published" : "draft";
+            !isNationwideProkurime && (forcePublish || registryRow.verification_status === "CHECKED");
 
           let inserted = 0;
           let updated = 0;
@@ -2002,14 +2097,29 @@ app.post("/api/scrape/run", async (req, res) => {
           let skipped_missing_date = 0;
           let skipped_wrong_year = 0;
           let skipped_missing_url = 0;
+          let draftInserted = 0;
+          let publishedInserted = 0;
           let parsed_kept = 0;
           let sample_kept_title = null;
-          const keptDedupKeys = new Set();
+          const keptDedupKeysByMunicipality = new Map();
           const skipped_no_municipality_match = Number(
             baselineResult.meta?.skipped_no_municipality_match || 0
           );
 
           for (const it of baselineResult.items) {
+            const rowMunicipalityId = isNationwideProkurime
+              ? String(it.municipality_id || "").trim()
+              : municipalityId;
+            if (!rowMunicipalityId) {
+              skipped += 1;
+              baselineSummary.skipped += 1;
+              continue;
+            }
+
+            const shouldPublishForItem = isNationwideProkurime
+              ? forcePublish || checkedPrimaryMunicipalityIds.has(rowMunicipalityId)
+              : shouldPublish;
+            const defaultStatus = shouldPublishForItem ? "published" : "draft";
             const title = it.title || "";
             const published_date = sanitizeISODate(it.published_date || null);
             const itemBaseUrl =
@@ -2052,17 +2162,21 @@ app.post("/api/scrape/run", async (req, res) => {
 
             const titleNormalized = it.title_normalized || normalizeTitle(title);
             const dedupKey = dedupKeyRegistryDocumentV1({
-              municipalityId,
+              municipalityId: rowMunicipalityId,
               category,
               publishedDate: published_date,
               title,
               titleNormalized,
               sourceUrl,
             });
-            keptDedupKeys.add(dedupKey);
+            if (shouldPublishForItem) {
+              const keepSet = keptDedupKeysByMunicipality.get(rowMunicipalityId) || new Set();
+              keepSet.add(dedupKey);
+              keptDedupKeysByMunicipality.set(rowMunicipalityId, keepSet);
+            }
 
             const action = await upsertRegistryDocumentItem({
-              municipalityId,
+              municipalityId: rowMunicipalityId,
               category,
               title,
               titleNormalized,
@@ -2071,7 +2185,7 @@ app.post("/api/scrape/run", async (req, res) => {
               sourcePageUrl,
               sourceOrigin,
               dedupKey,
-              shouldPublish,
+              shouldPublish: shouldPublishForItem,
               defaultStatus,
               systemUserId,
             });
@@ -2079,6 +2193,8 @@ app.post("/api/scrape/run", async (req, res) => {
             if (action === "inserted") {
               inserted += 1;
               baselineSummary.inserted += 1;
+              if (shouldPublishForItem) publishedInserted += 1;
+              else draftInserted += 1;
             } else if (action === "updated") {
               updated += 1;
               baselineSummary.updated += 1;
@@ -2089,8 +2205,9 @@ app.post("/api/scrape/run", async (req, res) => {
           }
 
           let publishedUpdated = 0;
-          if (shouldPublish && keptDedupKeys.size > 0) {
-            const keptKeys = Array.from(keptDedupKeys);
+          for (const [publishMunicipalityId, keys] of keptDedupKeysByMunicipality.entries()) {
+            if (!keys || !keys.size) continue;
+            const keptKeys = Array.from(keys);
             const publishUpdate = await pool.query(
               `
               UPDATE items
@@ -2101,50 +2218,59 @@ app.post("/api/scrape/run", async (req, res) => {
                 AND status <> 'published'
                 AND dedup_key = ANY($3::text[])
               `,
-              [municipalityId, category, keptKeys]
+              [publishMunicipalityId, category, keptKeys]
             );
-            publishedUpdated = publishUpdate.rowCount;
+            publishedUpdated += publishUpdate.rowCount;
           }
 
-          await pool.query(
-            `
-            UPDATE source_registry
-            SET
-              last_seen_utc = now(),
-              last_error_type = NULL,
-              cooldown_until_utc = NULL
-            WHERE id = $1
-            `,
-            [registryRow.id]
-          );
+          if (!isNationwideProkurime) {
+            await pool.query(
+              `
+              UPDATE source_registry
+              SET
+                last_seen_utc = now(),
+                last_error_type = NULL,
+                cooldown_until_utc = NULL
+              WHERE id = $1
+              `,
+              [registryRow.id]
+            );
+          }
 
           return {
             ok: true,
-            municipality: municipality || municipalityId,
-            municipality_id: municipalityId,
+            municipality: isNationwideProkurime ? null : municipality || municipalityId,
+            municipality_id: isNationwideProkurime ? null : municipalityId,
             category,
-            used_registry_id: registryRow.id,
+            used_registry_id: isNationwideProkurime ? null : registryRow.id,
             scraped_from: baselineSummary.used_url || baselineSummary.export_csv_url || null,
             parsed_rows_total: baselineSummary.parsed_rows_total,
+            matched_rows_total,
             parsed_rows_kept: parsed_kept,
             force_publish: forcePublish,
-            should_publish: shouldPublish,
+            should_publish: isNationwideProkurime ? null : shouldPublish,
             page_start: pageStart,
             inserted,
             updated,
             published_updated: publishedUpdated,
             skipped,
+            draft_inserted: draftInserted,
+            published_inserted: publishedInserted,
             skipped_missing_url,
             skipped_missing_date,
             skipped_wrong_year,
             skipped_no_municipality_match,
             baseline: baselineSummary,
             sample_title: sample_kept_title || baselineResult.items[0]?.title || null,
-            next: "Next: verify /api/feed returns this municipality/category.",
+            next: isNationwideProkurime
+              ? "Next: verify /api/feed returns Prokurime rows across municipalities."
+              : "Next: verify /api/feed returns this municipality/category.",
           };
         })(),
         SCRAPE_JOB_TIMEOUT_MS,
-        `scrape municipality ${municipalityId} category ${category}`
+        isNationwideProkurime
+          ? `scrape nationwide category ${category}`
+          : `scrape municipality ${municipalityId} category ${category}`
       );
 
       return res.json(successPayload);

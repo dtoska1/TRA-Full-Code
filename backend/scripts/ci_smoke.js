@@ -92,6 +92,52 @@ async function run() {
     );
   }
 
+  const nationwideProkurimePath = `/api/scrape/run?year=2025&category=${encodeURIComponent(
+    "Prokurime"
+  )}`;
+  const nationwideProkurime = await requestJson(nationwideProkurimePath, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${ADMIN_TOKEN}`,
+    },
+  });
+  assert(
+    nationwideProkurime.status === 200,
+    `POST ${nationwideProkurimePath} expected 200, got ${nationwideProkurime.status}`
+  );
+  assert(
+    nationwideProkurime.json && nationwideProkurime.json.ok === true,
+    "Nationwide Prokurime scrape expected { ok: true }"
+  );
+  assert(
+    Number.isFinite(Number(nationwideProkurime.json?.matched_rows_total)),
+    "Nationwide Prokurime scrape expected numeric matched_rows_total"
+  );
+  assert(
+    Number.isFinite(Number(nationwideProkurime.json?.draft_inserted)),
+    "Nationwide Prokurime scrape expected numeric draft_inserted"
+  );
+  assert(
+    Number.isFinite(Number(nationwideProkurime.json?.published_inserted)),
+    "Nationwide Prokurime scrape expected numeric published_inserted"
+  );
+  assert(
+    Number.isFinite(Number(nationwideProkurime.json?.skipped_no_municipality_match)),
+    "Nationwide Prokurime scrape expected numeric skipped_no_municipality_match"
+  );
+  assert(
+    Number.isFinite(Number(nationwideProkurime.json?.inserted)),
+    "Nationwide Prokurime scrape expected numeric inserted"
+  );
+  assert(
+    Number.isFinite(Number(nationwideProkurime.json?.updated)),
+    "Nationwide Prokurime scrape expected numeric updated"
+  );
+  assert(
+    Number.isFinite(Number(nationwideProkurime.json?.skipped)),
+    "Nationwide Prokurime scrape expected numeric skipped"
+  );
+
   console.log("Smoke checks passed.");
 }
 

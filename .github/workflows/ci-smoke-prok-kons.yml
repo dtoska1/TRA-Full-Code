@@ -94,6 +94,7 @@ jobs:
           MEILI_HOST: http://127.0.0.1:7700
           MEILI_MASTER_KEY: local-ci-master-key
           ADMIN_TOKEN: ci-test-token
+          PROKURIME_APP_FIXTURE: "1"
           PUBLIC_ORIGINS: http://localhost:3000
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
         run: |

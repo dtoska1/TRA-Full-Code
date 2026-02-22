@@ -1,5 +1,7 @@
 "use strict";
 
+const fs = require("fs");
+const path = require("path");
 const cheerio = require("cheerio");
 const { parse: parseCsvSync } = require("csv-parse/sync");
 const {
@@ -12,19 +14,24 @@ const APP_EXPORT_PAGE_URLS = [
   "https://www.app.gov.al/eksportimi-i-procedurave-te-publikuara/",
   "https://www.app.gov.al/export-public-calls/",
 ];
+const PROKURIME_APP_FIXTURES_DIR = path.join(__dirname, "..", "test", "fixtures");
 
 const DEFAULT_TIMEOUT_MS = 20000;
 
 const AUTHORITY_HEADER_KEYWORDS = [
   "autoriteti kontraktor",
   "autoritet kontraktor",
+  "autoriteti kontraktues",
+  "autoritet kontraktues",
   "emri i autoritetit kontraktor",
+  "emri i autoritetit kontraktues",
   "contracting authority",
   "authority",
 ];
 
 const TITLE_HEADER_KEYWORDS = [
   "objekti i kontrates",
+  "objekti i prokurimit",
   "object of contract",
   "object",
   "pershkrimi",
@@ -300,6 +307,116 @@ function parseKnownDate(value) {
   return null;
 }
 
+function isTruthyEnvFlag(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
+
+function readFixtureText(name) {
+  const fixturePath = path.join(PROKURIME_APP_FIXTURES_DIR, name);
+  return fs.readFileSync(fixturePath, "utf8");
+}
+
+function makeFixtureResponse(status, url, text) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    statusText: status >= 200 && status < 300 ? "OK" : "ERROR",
+    url,
+    async text() {
+      return text;
+    },
+  };
+}
+
+function normalizeComparableUrl(url) {
+  return String(url || "")
+    .trim()
+    .replace(/\/+$/, "")
+    .toLowerCase();
+}
+
+function createFixtureFetchImpl({ year }) {
+  const sqHtml = readFixtureText("app_export_page_sq.html");
+  const enHtml = readFixtureText("app_export_page_en.html");
+  const csvByYear = new Map([
+    [2025, `\uFEFF${readFixtureText("app_export_sample_2025.csv")}`],
+  ]);
+  const sqPageKey = normalizeComparableUrl(APP_EXPORT_PAGE_URLS[0]);
+  const enPageKey = normalizeComparableUrl(APP_EXPORT_PAGE_URLS[1]);
+
+  return async (url) => {
+    const rawUrl = String(url || "");
+    const normalizedUrl = normalizeComparableUrl(rawUrl);
+    if (normalizedUrl === sqPageKey) {
+      return makeFixtureResponse(200, APP_EXPORT_PAGE_URLS[0], sqHtml);
+    }
+    if (normalizedUrl === enPageKey) {
+      return makeFixtureResponse(200, APP_EXPORT_PAGE_URLS[1], enHtml);
+    }
+
+    let parsed = null;
+    try {
+      parsed = new URL(rawUrl);
+    } catch {
+      return makeFixtureResponse(404, rawUrl, "not found");
+    }
+
+    if (
+      String(parsed.hostname || "").toLowerCase().endsWith("app.gov.al") &&
+      String(parsed.pathname || "").toLowerCase() === "/getdata/exportdocument"
+    ) {
+      const requestedYear = Number.parseInt(String(parsed.searchParams.get("year") || ""), 10);
+      const csvRaw = csvByYear.get(requestedYear);
+      if (!csvRaw) {
+        return makeFixtureResponse(
+          404,
+          parsed.toString(),
+          `fixture missing for APP export year ${requestedYear}`
+        );
+      }
+      return makeFixtureResponse(200, parsed.toString(), csvRaw);
+    }
+
+    return makeFixtureResponse(404, rawUrl, "not found");
+  };
+}
+
+function resolveMunicipalityContexts({ municipalityContext, municipalityContexts }) {
+  const rawContexts = [];
+  if (Array.isArray(municipalityContexts) && municipalityContexts.length > 0) {
+    rawContexts.push(...municipalityContexts);
+  } else if (municipalityContext) {
+    rawContexts.push(municipalityContext);
+  }
+
+  const normalized = rawContexts
+    .map((ctx) => {
+      const municipalityId = String(ctx?.municipalityId || "").trim() || null;
+      const nameKey = String(ctx?.nameKey || "")
+        .trim()
+        .toLowerCase();
+      return {
+        municipalityId,
+        nameKey,
+        municipalityTerms: buildMunicipalityTermSet(ctx || {}),
+      };
+    })
+    .filter((ctx) => ctx.municipalityTerms.length > 0);
+
+  normalized.sort((a, b) => {
+    if (a.nameKey < b.nameKey) return -1;
+    if (a.nameKey > b.nameKey) return 1;
+    const aId = a.municipalityId || "";
+    const bId = b.municipalityId || "";
+    return aId.localeCompare(bId);
+  });
+
+  return normalized;
+}
+
 async function discoverExportCsvForYear({
   year,
   fetchImpl,
@@ -340,24 +457,35 @@ async function scrapeProkurimeAppExport({
   year,
   limit = 50,
   municipalityContext,
+  municipalityContexts,
   requestTimeoutMs = DEFAULT_TIMEOUT_MS,
   fetchImpl = fetch,
   pageUrls = APP_EXPORT_PAGE_URLS,
 }) {
-  const lim = Math.max(1, Math.min(200, Number(limit) || 50));
-  const municipalityTerms = buildMunicipalityTermSet(municipalityContext || {});
-  if (!municipalityTerms.length) {
+  const hasLimit = !(limit === null || limit === undefined || String(limit).trim() === "");
+  const parsedLimit = Number(limit);
+  const lim = hasLimit
+    ? Math.max(1, Math.min(200, Number.isFinite(parsedLimit) ? parsedLimit : 50))
+    : null;
+  const contextConfigs = resolveMunicipalityContexts({
+    municipalityContext,
+    municipalityContexts,
+  });
+  if (!contextConfigs.length) {
     throw new Error("Missing municipality term context for APP prokurime matching.");
   }
+  const effectiveFetchImpl = isTruthyEnvFlag(process.env.PROKURIME_APP_FIXTURE)
+    ? createFixtureFetchImpl({ year })
+    : fetchImpl;
 
   const discovered = await discoverExportCsvForYear({
     year,
-    fetchImpl,
+    fetchImpl: effectiveFetchImpl,
     requestTimeoutMs,
     pageUrls,
   });
   const csvFetch = await fetchTextWithTimeout(discovered.exportCsvUrl, {
-    fetchImpl,
+    fetchImpl: effectiveFetchImpl,
     requestTimeoutMs,
   });
   const parsed = parseCsvRecordsStrict(csvFetch.text);
@@ -370,17 +498,24 @@ async function scrapeProkurimeAppExport({
     const record = parsed.records[idx];
     const headers = getHeaderEntries(record);
     const authority = getValueByHeaderKeywords(record, headers, AUTHORITY_HEADER_KEYWORDS);
-    const authorityMatch = matchAuthorityToMunicipality({
-      authority,
-      municipalityTerms,
-    });
-    if (!authorityMatch.matched) {
+    let matchedContext = null;
+    for (const contextConfig of contextConfigs) {
+      const authorityMatch = matchAuthorityToMunicipality({
+        authority,
+        municipalityTerms: contextConfig.municipalityTerms,
+      });
+      if (!authorityMatch.matched) continue;
+      matchedContext = contextConfig;
+      break;
+    }
+
+    if (!matchedContext) {
       skippedNoMunicipalityMatch += 1;
       continue;
     }
     rowsMatched += 1;
 
-    if (items.length >= lim) continue;
+    if (lim !== null && items.length >= lim) continue;
 
     const titleRaw =
       getValueByHeaderKeywords(record, headers, TITLE_HEADER_KEYWORDS) ||
@@ -401,7 +536,7 @@ async function scrapeProkurimeAppExport({
     const sourceUrl = detailUrl || discovered.exportCsvUrl;
     const title = String(titleRaw).trim();
 
-    items.push({
+    const item = {
       title,
       title_normalized: normalizeTitle(title),
       source_url: sourceUrl,
@@ -409,7 +544,15 @@ async function scrapeProkurimeAppExport({
       source_origin: "app.gov.al",
       published_date: publishedDate,
       number: null,
-    });
+    };
+    if (matchedContext.municipalityId !== null) {
+      item.municipality_id = matchedContext.municipalityId;
+    }
+    if (matchedContext.nameKey) {
+      item.municipality_name_key = matchedContext.nameKey;
+    }
+
+    items.push(item);
   }
 
   return {
