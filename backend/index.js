@@ -352,6 +352,13 @@ function parsePositiveInt(value, fallback) {
   return n;
 }
 
+function parseNonNegativeInt(value, fallback) {
+  if (value === undefined || value === null || value === "") return fallback;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 0) return null;
+  return n;
+}
+
 function parseYear(value, fallback) {
   if (value === undefined || value === null || value === "") return fallback;
   const n = Number(String(value).trim());
@@ -1927,6 +1934,14 @@ app.post("/api/scrape/run", async (req, res) => {
       String(req.query.force_publish || "").trim().toLowerCase()
     );
   const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 50));
+  const offsetRaw =
+    req.query.offset !== undefined && req.query.offset !== null
+      ? req.query.offset
+      : req.query.row_start;
+  const offset = parseNonNegativeInt(offsetRaw, 0);
+  if (offset === null) {
+    return badRequest(res, "Invalid offset. offset (or row_start) must be an integer >= 0.");
+  }
   const pageStart = parsePositiveInt(req.query.page_start, 1);
   if (pageStart === null) {
     return badRequest(res, "Invalid page_start. page_start must be an integer >= 1.");
@@ -2055,7 +2070,8 @@ app.post("/api/scrape/run", async (req, res) => {
             checkedPrimaryMunicipalityIds = await loadCheckedPrimaryRegistryMunicipalityIds();
             baselineResult = await scrapeProkurimeAppExport({
               year,
-              limit: null,
+              limit,
+              offset,
               municipalityContexts,
               requestTimeoutMs: SCRAPE_REQUEST_TIMEOUT_MS,
             });
@@ -2087,6 +2103,9 @@ app.post("/api/scrape/run", async (req, res) => {
             skipped_wrong_year: 0,
           };
           const matched_rows_total = Number(baselineSummary.rows_matched || 0);
+          const nextOffset = isNationwideProkurime
+            ? (baselineResult.meta?.next_offset ?? null)
+            : null;
 
           const shouldPublish =
             !isNationwideProkurime && (forcePublish || registryRow.verification_status === "CHECKED");
@@ -2249,6 +2268,8 @@ app.post("/api/scrape/run", async (req, res) => {
             parsed_rows_kept: parsed_kept,
             force_publish: forcePublish,
             should_publish: isNationwideProkurime ? null : shouldPublish,
+            offset: isNationwideProkurime ? offset : undefined,
+            next_offset: isNationwideProkurime ? nextOffset : undefined,
             page_start: pageStart,
             inserted,
             updated,

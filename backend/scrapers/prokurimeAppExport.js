@@ -456,6 +456,7 @@ async function discoverExportCsvForYear({
 async function scrapeProkurimeAppExport({
   year,
   limit = 50,
+  offset = null,
   municipalityContext,
   municipalityContexts,
   requestTimeoutMs = DEFAULT_TIMEOUT_MS,
@@ -467,6 +468,12 @@ async function scrapeProkurimeAppExport({
   const lim = hasLimit
     ? Math.max(1, Math.min(200, Number.isFinite(parsedLimit) ? parsedLimit : 50))
     : null;
+  const hasOffset = !(offset === null || offset === undefined || String(offset).trim() === "");
+  const parsedOffset = hasOffset ? Number(offset) : 0;
+  if (hasOffset && (!Number.isInteger(parsedOffset) || parsedOffset < 0)) {
+    throw new Error("Invalid offset. offset must be an integer >= 0.");
+  }
+  const rowOffset = hasOffset ? parsedOffset : 0;
   const contextConfigs = resolveMunicipalityContexts({
     municipalityContext,
     municipalityContexts,
@@ -489,12 +496,19 @@ async function scrapeProkurimeAppExport({
     requestTimeoutMs,
   });
   const parsed = parseCsvRecordsStrict(csvFetch.text);
+  const totalRows = parsed.records.length;
+  const rowWindowStart = hasOffset ? Math.min(rowOffset, totalRows) : 0;
+  const rowWindowSize = lim === null ? Math.max(0, totalRows - rowWindowStart) : lim;
+  const rowWindowEnd = hasOffset
+    ? Math.min(totalRows, rowWindowStart + rowWindowSize)
+    : totalRows;
+  const rowWindowMode = hasOffset;
 
   const items = [];
   let rowsMatched = 0;
   let skippedNoMunicipalityMatch = 0;
 
-  for (let idx = 0; idx < parsed.records.length; idx += 1) {
+  for (let idx = rowWindowStart; idx < rowWindowEnd; idx += 1) {
     const record = parsed.records[idx];
     const headers = getHeaderEntries(record);
     const authority = getValueByHeaderKeywords(record, headers, AUTHORITY_HEADER_KEYWORDS);
@@ -515,7 +529,7 @@ async function scrapeProkurimeAppExport({
     }
     rowsMatched += 1;
 
-    if (lim !== null && items.length >= lim) continue;
+    if (!rowWindowMode && lim !== null && items.length >= lim) continue;
 
     const titleRaw =
       getValueByHeaderKeywords(record, headers, TITLE_HEADER_KEYWORDS) ||
@@ -561,9 +575,13 @@ async function scrapeProkurimeAppExport({
     meta: {
       source_page_url: discovered.sourcePageUrl,
       export_csv_url: discovered.exportCsvUrl,
-      rows_total: parsed.records.length,
+      rows_total: totalRows,
       rows_matched: rowsMatched,
       skipped_no_municipality_match: skippedNoMunicipalityMatch,
+      row_window_start: rowWindowStart,
+      row_window_end: rowWindowEnd,
+      rows_processed: rowWindowEnd - rowWindowStart,
+      next_offset: rowWindowEnd < totalRows ? rowWindowEnd : null,
     },
   };
 }

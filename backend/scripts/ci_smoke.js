@@ -92,7 +92,7 @@ async function run() {
     );
   }
 
-  const nationwideProkurimePath = `/api/scrape/run?year=2025&category=${encodeURIComponent(
+  const nationwideProkurimePath = `/api/scrape/run?year=2025&limit=1&offset=0&category=${encodeURIComponent(
     "Prokurime"
   )}`;
   const nationwideProkurime = await requestJson(nationwideProkurimePath, {
@@ -112,6 +112,14 @@ async function run() {
   assert(
     Number.isFinite(Number(nationwideProkurime.json?.matched_rows_total)),
     "Nationwide Prokurime scrape expected numeric matched_rows_total"
+  );
+  assert(
+    Number(nationwideProkurime.json?.offset) === 0,
+    "Nationwide Prokurime scrape expected offset=0"
+  );
+  assert(
+    Number(nationwideProkurime.json?.next_offset) === 1,
+    "Nationwide Prokurime scrape expected next_offset=1 in fixture chunk mode"
   );
   assert(
     Number.isFinite(Number(nationwideProkurime.json?.draft_inserted)),
