@@ -5,6 +5,7 @@ const fs = require("fs");
 const path = require("path");
 const {
   scrapeProkurimeAppExport,
+  buildProkurimeAppDedupKey,
   __test: prokTest,
 } = require("../scrapers/prokurimeAppExport");
 
@@ -122,6 +123,26 @@ async function run() {
   assert(
     result.items[1].source_url === "https://www.app.gov.al/GetData/ExportDocument?year=2025",
     `Fallback source_url mapping failed: ${result.items[1].source_url}`
+  );
+  const dedupFromRefA = buildProkurimeAppDedupKey({
+    year: 2024,
+    municipalityId: "municipality-1",
+    procedureId: "REF-11111-01-01-2024",
+    publishedDate: "2024-01-01",
+    title: "Procurement title",
+    titleNormalized: "procurement title",
+  });
+  const dedupFromRefB = buildProkurimeAppDedupKey({
+    year: 2024,
+    municipalityId: "municipality-1",
+    procedureId: "REF-22222-01-01-2024",
+    publishedDate: "2024-01-01",
+    title: "Procurement title",
+    titleNormalized: "procurement title",
+  });
+  assert(
+    dedupFromRefA !== dedupFromRefB,
+    `Different procedure_id values must produce different dedup keys (${dedupFromRefA} vs ${dedupFromRefB})`
   );
 
   console.log("Prokurime APP export parser tests passed.");

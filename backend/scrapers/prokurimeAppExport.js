@@ -1,5 +1,6 @@
 "use strict";
 
+const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const cheerio = require("cheerio");
@@ -61,6 +62,16 @@ const DETAIL_HEADER_KEYWORDS = [
   "file",
 ];
 
+const PROCEDURE_ID_HEADER_KEYWORDS = [
+  "numri i references",
+  "nr i references",
+  "nr reference",
+  "reference no",
+  "reference number",
+  "procedure id",
+  "id procedure",
+];
+
 function normalizeTitle(value) {
   return String(value || "")
     .toLowerCase()
@@ -68,6 +79,38 @@ function normalizeTitle(value) {
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
+}
+
+function normalizeProcedureId(value) {
+  return String(value || "")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .trim();
+}
+
+function buildProkurimeAppDedupKey({
+  year,
+  municipalityId,
+  procedureId,
+  publishedDate,
+  title,
+  titleNormalized,
+}) {
+  const municipalityPart = String(municipalityId || "").trim() || "unknown";
+  const yearPart = Number.isInteger(Number(year)) ? String(Number(year)) : "unknown";
+  const procedurePart = normalizeProcedureId(procedureId);
+
+  if (procedurePart) {
+    return `prokurime|app|${yearPart}|${municipalityPart}|${procedurePart}`;
+  }
+
+  const datePart = publishedDate || "unknown";
+  const titleNorm = titleNormalized || normalizeTitle(title) || "untitled";
+  const titleHash = crypto.createHash("sha1").update(titleNorm).digest("hex").slice(0, 12);
+  return `prokurime|app|${yearPart}|${municipalityPart}|d:${datePart}|t:${titleHash}`;
 }
 
 function stripBom(value) {
@@ -536,6 +579,7 @@ async function scrapeProkurimeAppExport({
       `Prokurime APP ${year} row ${idx + 1}`;
     const publishedDateRaw = getValueByHeaderKeywords(record, headers, DATE_HEADER_KEYWORDS);
     const publishedDate = parseKnownDate(publishedDateRaw);
+    const procedureId = getValueByHeaderKeywords(record, headers, PROCEDURE_ID_HEADER_KEYWORDS);
 
     let detailUrl = "";
     const detailCandidate = getValueByHeaderKeywords(record, headers, DETAIL_HEADER_KEYWORDS);
@@ -547,12 +591,18 @@ async function scrapeProkurimeAppExport({
       }
     }
 
-    const sourceUrl = detailUrl || discovered.exportCsvUrl;
+    const normalizedProcedureId = normalizeProcedureId(procedureId);
+    const sourceUrl = detailUrl
+      ? detailUrl
+      : normalizedProcedureId
+        ? `${discovered.exportCsvUrl}#procedure=${encodeURIComponent(normalizedProcedureId)}`
+        : discovered.exportCsvUrl;
     const title = String(titleRaw).trim();
 
     const item = {
       title,
       title_normalized: normalizeTitle(title),
+      procedure_id: procedureId || null,
       source_url: sourceUrl,
       source_page_url: discovered.sourcePageUrl,
       source_origin: "app.gov.al",
@@ -564,6 +614,16 @@ async function scrapeProkurimeAppExport({
     }
     if (matchedContext.nameKey) {
       item.municipality_name_key = matchedContext.nameKey;
+    }
+    if (matchedContext.municipalityId !== null) {
+      item.dedup_key = buildProkurimeAppDedupKey({
+        year,
+        municipalityId: matchedContext.municipalityId,
+        procedureId,
+        publishedDate,
+        title,
+        titleNormalized: item.title_normalized,
+      });
     }
 
     items.push(item);
@@ -588,11 +648,14 @@ async function scrapeProkurimeAppExport({
 
 module.exports = {
   scrapeProkurimeAppExport,
+  buildProkurimeAppDedupKey,
   __test: {
     APP_EXPORT_PAGE_URLS,
     discoverYearCsvUrlFromHtml,
     parseCsvRecordsStrict,
     parseKnownDate,
     discoverExportCsvForYear,
+    normalizeProcedureId,
+    buildProkurimeAppDedupKey,
   },
 };

@@ -25,7 +25,10 @@ dns.setDefaultResultOrder("ipv4first");
 const { scrapeTiranaVendime } = require("./scrapers/tiranaVendime");
 const { scrapeGenericDocuments } = require("./scrapers/genericDocuments");
 const { scrapeVendimeAl } = require("./scrapers/vendimeAl");
-const { scrapeProkurimeAppExport } = require("./scrapers/prokurimeAppExport");
+const {
+  scrapeProkurimeAppExport,
+  buildProkurimeAppDedupKey,
+} = require("./scrapers/prokurimeAppExport");
 
 console.log("LOADED INDEX.JS FROM:", __filename);
 
@@ -2180,13 +2183,13 @@ app.post("/api/scrape/run", async (req, res) => {
             if (!sample_kept_title) sample_kept_title = title;
 
             const titleNormalized = it.title_normalized || normalizeTitle(title);
-            const dedupKey = dedupKeyRegistryDocumentV1({
+            const dedupKey = buildProkurimeAppDedupKey({
+              year,
               municipalityId: rowMunicipalityId,
-              category,
+              procedureId: it.procedure_id,
               publishedDate: published_date,
               title,
               titleNormalized,
-              sourceUrl,
             });
             if (shouldPublishForItem) {
               const keepSet = keptDedupKeysByMunicipality.get(rowMunicipalityId) || new Set();
