@@ -323,6 +323,23 @@ Resume behavior:
 - Set `--resume=false` to ignore previous progress and run all municipalities again.
 - If `--stop_on_error=true`, the script stops immediately on first failure and keeps progress on disk.
 
+Vendime nationwide runner (single `next_offset` resume pointer):
+
+```bash
+node backend/scripts/run_vendime_nationwide.js --year=2025 --limit=80 --sleep_ms=1200 --max_runtime_ms=0 --resume=true
+```
+
+How it works:
+
+- Calls `POST /api/scrape/run?category=Vendime&year=YYYY&offset=...&limit=...`.
+- Uses `next_offset` from API response as the single authoritative resume pointer.
+- Writes progress to `backend/tmp/vendime_progress_YYYY.json`.
+- If HTTP `429` is returned, retries the same offset with exponential backoff.
+- Supports compatibility alias `--start_offset=...` (same as `--offset=...`).
+- When `--year` is provided, scrape responses include strict year-gating counters:
+  - `skipped_missing_date`
+  - `skipped_wrong_year`
+
 Registry category batch runner (Vendime / Prokurime / Konsultime):
 
 ```bash
@@ -362,19 +379,45 @@ Prokurime v1 scope:
 Use the dedicated nationwide runner (local only; do not run in CI):
 
 ```bash
-node backend/scripts/run_prokurime_nationwide.js --year=2024 --limit=500 --sleep_ms=1500 --start_offset=0
+node backend/scripts/run_prokurime_nationwide.js --year=2024 --limit=500 --sleep_ms=1500 --max_runtime_ms=0 --resume=true
 ```
 
 How it works:
 
 - Calls `POST /api/scrape/run?category=Prokurime&year=YYYY&offset=...&limit=...` on `http://localhost:5050` by default with `Authorization: Bearer <ADMIN_TOKEN>`.
 - Writes chunk progress to `backend/tmp/prokurime_progress_YYYY.json` after every chunk.
+- Standardized runner flags:
+  - `--year=YYYY`
+  - `--limit=...`
+  - `--sleep_ms=...`
+  - `--max_runtime_ms=...` (`0` means no runtime cap)
+  - `--resume=true|false`
+- Compatibility alias kept: `--start_offset=...` (maps to initial offset override). You can also use `--offset=...`.
 - Sleeps between successful chunks (`--sleep_ms`, default `1500`) to self-throttle nationwide runs.
-- If the API returns HTTP `429`, the runner retries the same offset automatically with backoff (`10s`, `20s`, `40s`, then capped at `60s`).
+- If the API returns HTTP `429`, the runner retries the same offset automatically with exponential backoff (capped at `60s`).
 - Optional base URL override: set `API_BASE` (or `SMOKE_BASE_URL`) before running if your local API is not on the default host/port.
-- Resume automatically: rerun the same command **without** `--start_offset` and it continues from `next_offset` in the progress file.
+- Resume automatically: rerun the same command with `--resume=true` and it continues from `next_offset` in the progress file.
 - If a chunk times out or is too heavy, reduce `--limit` (for example `--limit=200`) and rerun.
 - The run completes when `next_offset` becomes `null`.
+
+Progress schema (`backend/tmp/prokurime_progress_YYYY.json`):
+
+```json
+{
+  "year": 2025,
+  "mode": "nationwide",
+  "next_offset": 1200,
+  "total_seen": 0,
+  "total_inserted": 0,
+  "total_skipped": 0,
+  "last_ok_utc": "2026-02-23T12:34:56.000Z",
+  "last_error": {
+    "type": "HTTP_429",
+    "message": "Too many scrape requests, please try again later.",
+    "at_utc": "2026-02-23T12:35:12.000Z"
+  }
+}
+```
 
 Offline parser test (fixtures only):
 
