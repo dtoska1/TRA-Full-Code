@@ -362,13 +362,15 @@ Prokurime v1 scope:
 Use the dedicated nationwide runner (local only; do not run in CI):
 
 ```bash
-node backend/scripts/run_prokurime_nationwide.js --year=2024 --limit=500 --start_offset=0
+node backend/scripts/run_prokurime_nationwide.js --year=2024 --limit=500 --sleep_ms=1500 --start_offset=0
 ```
 
 How it works:
 
 - Calls `POST /api/scrape/run?category=Prokurime&year=YYYY&offset=...&limit=...` on `http://localhost:5050` by default with `Authorization: Bearer <ADMIN_TOKEN>`.
 - Writes chunk progress to `backend/tmp/prokurime_progress_YYYY.json` after every chunk.
+- Sleeps between successful chunks (`--sleep_ms`, default `1500`) to self-throttle nationwide runs.
+- If the API returns HTTP `429`, the runner retries the same offset automatically with backoff (`10s`, `20s`, `40s`, then capped at `60s`).
 - Optional base URL override: set `API_BASE` (or `SMOKE_BASE_URL`) before running if your local API is not on the default host/port.
 - Resume automatically: rerun the same command **without** `--start_offset` and it continues from `next_offset` in the progress file.
 - If a chunk times out or is too heavy, reduce `--limit` (for example `--limit=200`) and rerun.

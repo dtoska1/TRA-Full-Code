@@ -29,6 +29,10 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
+}
+
 function readProgress(progressPath) {
   if (!fs.existsSync(progressPath)) return null;
   try {
@@ -53,6 +57,7 @@ async function run() {
   const args = parseArgs(process.argv);
   const year = Math.max(2000, Math.min(2100, toInt(args.year, new Date().getUTCFullYear())));
   const limit = Math.max(1, Math.min(500, toInt(args.limit, 500)));
+  const sleepMs = Math.max(0, toInt(args.sleep_ms, 1500));
   const hasStartOffset = Object.prototype.hasOwnProperty.call(args, "start_offset");
   const explicitStartOffset = Math.max(0, toInt(args.start_offset, 0));
   const adminToken = String(process.env.ADMIN_TOKEN || "").trim();
@@ -71,6 +76,7 @@ async function run() {
 
   let totalInserted = hasStartOffset ? 0 : Math.max(0, toInt(existingProgress?.total_inserted, 0));
   let totalMatched = hasStartOffset ? 0 : Math.max(0, toInt(existingProgress?.total_matched, 0));
+  let retryBackoffMs = 10_000;
 
   if (existingProgress?.next_offset === null && !hasStartOffset) {
     console.log(`year=${year} already complete (next_offset=null) progress_file=${progressPath}`);
@@ -92,6 +98,13 @@ async function run() {
       },
     });
 
+    if (response.status === 429) {
+      console.warn(`year=${year} offset=${offset} limit=${limit} status=429 backoff_ms=${retryBackoffMs} retrying=true`);
+      await sleep(retryBackoffMs);
+      retryBackoffMs = Math.min(retryBackoffMs * 2, 60_000);
+      continue;
+    }
+
     const text = await response.text();
     let payload;
     try {
@@ -103,6 +116,7 @@ async function run() {
     if (!response.ok || !payload?.ok) {
       throw new Error(`HTTP ${response.status}: ${sanitizeMessage(payload?.message || payload?.error || "Request failed")}`);
     }
+    retryBackoffMs = 10_000;
 
     const inserted = Math.max(0, toInt(payload.inserted, 0));
     const matched = Math.max(0, toInt(payload.matched_rows_total, 0));
@@ -129,6 +143,7 @@ async function run() {
     }
 
     offset = nextOffset;
+    await sleep(sleepMs);
   }
 }
 
