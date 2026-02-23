@@ -1964,20 +1964,16 @@ app.post("/api/scrape/run", async (req, res) => {
     (municipality !== null && String(municipality).trim() !== "") ||
     (municipality_id !== null && String(municipality_id).trim() !== "");
   const isProkurimeCategory = category === "Prokurime";
+  const isVendimeCategory = category === "Vendime";
   let isNationwideProkurime = false;
+  let isNationwideVendime = false;
+  let vendimeNationwideState = null;
   const registryUrlColumn = getRegistryUrlColumnForCategory(category);
   let baselineTargetUrl = null;
 
   try {
     municipalityId = await getMunicipalityId({ municipality, municipality_id });
-    if (!isProkurimeCategory && !municipalityId) {
-      return res.status(400).json({
-        ok: false,
-        error: "bad_request",
-        message: "Provide municipality (name_key/name_sq) or municipality_id",
-      });
-    }
-    if (isProkurimeCategory && hasMunicipalitySelector && !municipalityId) {
+    if ((isProkurimeCategory || isVendimeCategory) && hasMunicipalitySelector && !municipalityId) {
       return res.status(400).json({
         ok: false,
         error: "bad_request",
@@ -1985,8 +1981,62 @@ app.post("/api/scrape/run", async (req, res) => {
       });
     }
     isNationwideProkurime = isProkurimeCategory && !municipalityId;
+    isNationwideVendime = isVendimeCategory && !hasMunicipalitySelector && !municipalityId;
 
-    if (!isNationwideProkurime) {
+    if (isNationwideVendime) {
+      const nationwideRows = await pool.query(
+        `
+        SELECT m.id AS municipality_id, m.name_key
+        FROM municipalities m
+        JOIN source_registry sr
+          ON sr.municipality_id = m.id
+         AND sr.is_primary = TRUE
+        ORDER BY lower(m.name_key) ASC, m.id ASC
+        `
+      );
+      const total = nationwideRows.rowCount;
+      if (offset >= total) {
+        return res.json({
+          ok: true,
+          category: "Vendime",
+          nationwide: true,
+          offset,
+          next_offset: null,
+          parsed_rows_total: 0,
+          parsed_rows_kept: 0,
+          inserted: 0,
+          updated: 0,
+          published_updated: 0,
+          skipped: 0,
+          skipped_missing_url: 0,
+          skipped_missing_date: 0,
+          skipped_wrong_year: 0,
+          skipped_not_vendim: 0,
+          skipped_not_municipality: 0,
+          skipped_no_municipality_match: 0,
+          next: "Vendime nationwide run completed.",
+        });
+      }
+
+      const selected = nationwideRows.rows[offset];
+      municipalityId = String(selected.municipality_id || "").trim();
+      const nextOffset = offset + 1 < total ? offset + 1 : null;
+      vendimeNationwideState = {
+        offset,
+        next_offset: nextOffset,
+        municipality_name_key: String(selected.name_key || "").trim() || null,
+      };
+    }
+
+    if (!isProkurimeCategory && !isNationwideVendime && !municipalityId) {
+      return res.status(400).json({
+        ok: false,
+        error: "bad_request",
+        message: "Provide municipality (name_key/name_sq) or municipality_id",
+      });
+    }
+
+    if (!isNationwideProkurime && !isNationwideVendime) {
       registryRow = await loadRegistryRow(municipalityId);
       if (!registryRow) {
         return res.status(404).json({
@@ -2044,6 +2094,74 @@ app.post("/api/scrape/run", async (req, res) => {
       const bucket = utcHourBucket(startedAt);
       const nextBuckets = appendHourBucket(registryRow.hour_buckets_seen, bucket);
 
+      await pool.query(
+        `
+        UPDATE source_registry
+        SET
+          attempt_count = attempt_count + 1,
+          first_seen_utc = COALESCE(first_seen_utc, now()),
+          last_checked_utc = now(),
+          hour_buckets_seen = $2,
+          last_error_type = NULL
+        WHERE id = $1
+        `,
+        [registryRow.id, nextBuckets]
+      );
+    } else if (isNationwideVendime) {
+      registryRow = await loadRegistryRow(municipalityId);
+      if (!registryRow) {
+        return res.status(404).json({
+          ok: false,
+          error: "no_registry",
+          message: "No source_registry row found for this municipality",
+        });
+      }
+
+      baselineTargetUrl = applyYearTemplate((registryUrlColumn ? registryRow[registryUrlColumn] : null) || null, year);
+      if (!baselineTargetUrl) {
+        const tiranaId = await getTiranaId();
+        if (tiranaId && municipalityId === tiranaId) {
+          baselineTargetUrl = `https://tirana.al/kategoria-e-publikimit/vendime-te-keshillit-bashkiak-${year}-4290`;
+        }
+      }
+
+      if (!baselineTargetUrl) {
+        await pool.query(
+          `
+          UPDATE source_registry
+          SET last_error_type = 'CONFIG_MISSING_URL'
+          WHERE id = $1
+          `,
+          [registryRow.id]
+        );
+        return res.json({
+          ok: true,
+          category: "Vendime",
+          nationwide: true,
+          municipality_id: municipalityId,
+          municipality: vendimeNationwideState?.municipality_name_key || municipalityId,
+          used_registry_id: registryRow.id,
+          offset: vendimeNationwideState?.offset,
+          next_offset: vendimeNationwideState?.next_offset ?? null,
+          parsed_rows_total: 0,
+          parsed_rows_kept: 0,
+          inserted: 0,
+          updated: 0,
+          published_updated: 0,
+          skipped: 1,
+          skipped_missing_url: 1,
+          skipped_missing_date: 0,
+          skipped_wrong_year: 0,
+          skipped_not_vendim: 0,
+          skipped_not_municipality: 0,
+          skipped_no_municipality_match: 0,
+          last_error_type: "CONFIG_MISSING_URL",
+          next: "Next: continue vendime nationwide run from next_offset.",
+        });
+      }
+
+      const bucket = utcHourBucket(startedAt);
+      const nextBuckets = appendHourBucket(registryRow.hour_buckets_seen, bucket);
       await pool.query(
         `
         UPDATE source_registry
@@ -2945,9 +3063,13 @@ app.post("/api/scrape/run", async (req, res) => {
         // 3) verify response includes baseline+official and no duplicate vendime rows in /api/feed?municipality=tirane
         return {
           ok: true,
-          municipality: municipality || municipalityId,
+          municipality:
+            vendimeNationwideState?.municipality_name_key || municipality || municipalityId,
           municipality_id: municipalityId,
           category: "Vendime",
+          nationwide: !!vendimeNationwideState,
+          offset: vendimeNationwideState?.offset,
+          next_offset: vendimeNationwideState?.next_offset,
           used_registry_id: registryRow.id,
           scraped_from: baselineSummary.used_url || baselineTargetUrl,
           parsed_rows_total:
