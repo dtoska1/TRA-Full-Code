@@ -69,6 +69,80 @@ async function run() {
     Array.isArray(coverageWithAuth.json.items),
     "GET /api/admin/coverage expected items array"
   );
+  if (coverageWithAuth.json.items.length > 0) {
+    assert(
+      typeof coverageWithAuth.json.items[0].category_checked === "boolean",
+      "GET /api/admin/coverage expected category_checked boolean on rows"
+    );
+  }
+
+  const sourceCheckedNoAuth = await requestJson(
+    `/api/admin/source/checked?municipality=tirane&category=${encodeURIComponent("Vendime")}&checked=true`,
+    {
+      method: "POST",
+    }
+  );
+  assert(
+    sourceCheckedNoAuth.status === 401,
+    `POST /api/admin/source/checked without auth expected 401, got ${sourceCheckedNoAuth.status}`
+  );
+
+  const publishNoAuth = await requestJson(
+    `/api/admin/publish?municipality=tirane&category=${encodeURIComponent("Vendime")}`,
+    {
+      method: "POST",
+    }
+  );
+  assert(
+    publishNoAuth.status === 401,
+    `POST /api/admin/publish without auth expected 401, got ${publishNoAuth.status}`
+  );
+
+  const sourceCheckedWithAuth = await requestJson(
+    `/api/admin/source/checked?municipality=tirane&category=${encodeURIComponent(
+      "Vendime"
+    )}&checked=true`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${ADMIN_TOKEN}`,
+      },
+    }
+  );
+  assert(
+    sourceCheckedWithAuth.status === 200,
+    `POST /api/admin/source/checked with auth expected 200, got ${sourceCheckedWithAuth.status}`
+  );
+  assert(
+    sourceCheckedWithAuth.json && sourceCheckedWithAuth.json.ok === true,
+    "POST /api/admin/source/checked expected { ok: true }"
+  );
+  assert(
+    sourceCheckedWithAuth.json && sourceCheckedWithAuth.json.checked === true,
+    "POST /api/admin/source/checked expected checked=true"
+  );
+
+  const publishWithAuth = await requestJson(
+    `/api/admin/publish?municipality=tirane&category=${encodeURIComponent("Vendime")}&year=2025`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${ADMIN_TOKEN}`,
+      },
+    }
+  );
+  assert(
+    publishWithAuth.status === 200,
+    `POST /api/admin/publish with auth expected 200, got ${publishWithAuth.status}`
+  );
+  assert(
+    publishWithAuth.json && publishWithAuth.json.ok === true,
+    "POST /api/admin/publish expected { ok: true }"
+  );
+  assert(
+    Number.isFinite(Number(publishWithAuth.json?.published_updated)),
+    "POST /api/admin/publish expected numeric published_updated"
+  );
 
   const categories = ["Prokurime", "Konsultime publike"];
   for (const category of categories) {

@@ -120,6 +120,18 @@ const scrapeLimiter = rateLimit({
   },
 });
 app.use("/api/scrape", scrapeLimiter);
+const adminLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: Number(process.env.ADMIN_RATE_LIMIT_MAX || 30),
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    error: "rate_limited",
+    message: "Too many admin requests, please try again later.",
+  },
+});
+app.use("/api/admin", adminLimiter);
 
 function requireAdmin(req, res, next) {
   if (!ADMIN_TOKEN) {
@@ -381,6 +393,14 @@ function asEnabledFlag(value) {
   return s === "true" || s === "1" || s === "t" || s === "yes" || s === "on";
 }
 
+function parseBooleanWithDefault(value, fallback) {
+  if (value === undefined || value === null || value === "") return fallback;
+  const s = String(value).trim().toLowerCase();
+  if (["1", "true", "t", "yes", "y", "on"].includes(s)) return true;
+  if (["0", "false", "f", "no", "n", "off"].includes(s)) return false;
+  return fallback;
+}
+
 const SUPPORTED_CATEGORIES = ["Vendime", "Prokurime", "Konsultime publike"];
 
 function resolveSupportedCategory(value, fallback = "Vendime") {
@@ -403,6 +423,19 @@ function getRegistryUrlColumnForCategory(category) {
   if (category === "Prokurime") return "prokurime_url";
   if (category === "Konsultime publike") return "konsultime_url";
   return null;
+}
+
+function getCheckedColumnForCategory(category) {
+  if (category === "Vendime") return "vendime_checked";
+  if (category === "Prokurime") return "prokurime_checked";
+  if (category === "Konsultime publike") return "konsultime_checked";
+  return null;
+}
+
+function isCategoryChecked(registryRow, category) {
+  const checkedColumn = getCheckedColumnForCategory(category);
+  if (!checkedColumn) return false;
+  return asEnabledFlag(registryRow?.[checkedColumn]);
 }
 
 function badRequest(res, message) {
@@ -1057,13 +1090,15 @@ async function loadAllMunicipalityMatchContexts() {
   return contexts;
 }
 
-async function loadCheckedPrimaryRegistryMunicipalityIds() {
+async function loadCheckedPrimaryRegistryMunicipalityIds(category) {
+  const checkedColumn = getCheckedColumnForCategory(category);
+  if (!checkedColumn) return new Set();
   const result = await pool.query(
     `
     SELECT municipality_id
     FROM source_registry
     WHERE is_primary = TRUE
-      AND verification_status = 'CHECKED'
+      AND ${checkedColumn} = TRUE
     `
   );
   return new Set(
@@ -1563,6 +1598,8 @@ app.get("/", (req, res) => {
       "/api/debug/db-encoding",
       "/api/municipalities",
       "/api/admin/coverage",
+      "/api/admin/publish",
+      "/api/admin/source/checked",
       "/api/feed",
       "/api/scrape/tirana/vendime",
       "/api/scrape/run",
@@ -1664,6 +1701,144 @@ app.get("/api/admin/coverage", requireAdmin, async (req, res) => {
     res.json(summary);
   } catch (err) {
     res.status(500).json({
+      ok: false,
+      error: "db_error",
+      message: safePublicErrorMessage(err, "Database operation failed"),
+    });
+  }
+});
+
+app.post("/api/admin/source/checked", requireAdmin, async (req, res) => {
+  try {
+    const municipality =
+      req.query.municipality !== undefined ? String(req.query.municipality) : req.body?.municipality;
+    const municipality_id =
+      req.query.municipality_id !== undefined
+        ? String(req.query.municipality_id)
+        : req.body?.municipality_id;
+    const requestedCategory =
+      req.query.category !== undefined ? req.query.category : req.body?.category;
+    const category = resolveSupportedCategory(requestedCategory, null);
+    if (!category) {
+      return badRequest(
+        res,
+        `Invalid category. Supported categories: ${SUPPORTED_CATEGORIES.join(", ")}`
+      );
+    }
+
+    const checkedRaw =
+      req.query.checked !== undefined ? req.query.checked : req.body?.checked;
+    const checked = parseBooleanWithDefault(checkedRaw, true);
+    const municipalityId = await getMunicipalityId({ municipality, municipality_id });
+    if (!municipalityId) {
+      return badRequest(res, "Invalid municipality (name_key/name_sq) or municipality_id");
+    }
+
+    const checkedColumn = getCheckedColumnForCategory(category);
+    if (!checkedColumn) {
+      return badRequest(res, "Unsupported category for checked state.");
+    }
+
+    const registryRow = await loadRegistryRow(municipalityId);
+    if (!registryRow) {
+      return res.status(404).json({
+        ok: false,
+        error: "no_registry",
+        message: "No source_registry row found for this municipality",
+      });
+    }
+
+    await pool.query(
+      `
+      UPDATE source_registry
+      SET ${checkedColumn} = $2,
+          updated_at = now()
+      WHERE id = $1
+      `,
+      [registryRow.id, checked]
+    );
+
+    const updatedRow = await loadRegistryRow(municipalityId);
+    return res.json({
+      ok: true,
+      municipality: municipality || (await getMunicipalityNameKeyById(municipalityId)) || municipalityId,
+      municipality_id: municipalityId,
+      category,
+      source_registry_id: registryRow.id,
+      checked: isCategoryChecked(updatedRow, category),
+      checked_column: checkedColumn,
+      next: "Next: run scrape or publish drafts for this municipality/category.",
+    });
+  } catch (err) {
+    return res.status(500).json({
+      ok: false,
+      error: "db_error",
+      message: safePublicErrorMessage(err, "Database operation failed"),
+    });
+  }
+});
+
+app.post("/api/admin/publish", requireAdmin, async (req, res) => {
+  try {
+    const municipality =
+      req.query.municipality !== undefined ? String(req.query.municipality) : req.body?.municipality;
+    const municipality_id =
+      req.query.municipality_id !== undefined
+        ? String(req.query.municipality_id)
+        : req.body?.municipality_id;
+    const requestedCategory =
+      req.query.category !== undefined ? req.query.category : req.body?.category;
+    const category = resolveSupportedCategory(requestedCategory, null);
+    if (!category) {
+      return badRequest(
+        res,
+        `Invalid category. Supported categories: ${SUPPORTED_CATEGORIES.join(", ")}`
+      );
+    }
+
+    const yearProvided =
+      (req.query.year !== undefined && req.query.year !== null && String(req.query.year).trim() !== "") ||
+      (req.body?.year !== undefined && req.body?.year !== null && String(req.body.year).trim() !== "");
+    const yearRaw = req.query.year !== undefined ? req.query.year : req.body?.year;
+    const year = parseYear(yearRaw, null);
+    if (yearProvided && year === null) {
+      return badRequest(res, "Invalid year. year must be an integer between 2000 and 2100.");
+    }
+
+    const municipalityId = await getMunicipalityId({ municipality, municipality_id });
+    if (!municipalityId) {
+      return badRequest(res, "Invalid municipality (name_key/name_sq) or municipality_id");
+    }
+
+    const publishUpdate = await pool.query(
+      `
+      UPDATE items
+      SET status = 'published',
+          updated_at = now()
+      WHERE municipality_id = $1
+        AND category = $2
+        AND status <> 'published'
+        AND (
+          $3::int IS NULL OR (
+            published_date IS NOT NULL
+            AND EXTRACT(YEAR FROM published_date)::int = $3
+          )
+        )
+      `,
+      [municipalityId, category, year]
+    );
+
+    return res.json({
+      ok: true,
+      municipality: municipality || (await getMunicipalityNameKeyById(municipalityId)) || municipalityId,
+      municipality_id: municipalityId,
+      category,
+      year: year || null,
+      published_updated: publishUpdate.rowCount,
+      next: "Next: verify coverage and public feed counts.",
+    });
+  } catch (err) {
+    return res.status(500).json({
       ok: false,
       error: "db_error",
       message: safePublicErrorMessage(err, "Database operation failed"),
@@ -2239,7 +2414,9 @@ app.post("/api/scrape/run", async (req, res) => {
             if (!municipalityContexts.length) {
               throw new Error("No municipality contexts found for nationwide Prokurime run.");
             }
-            checkedPrimaryMunicipalityIds = await loadCheckedPrimaryRegistryMunicipalityIds();
+            checkedPrimaryMunicipalityIds = await loadCheckedPrimaryRegistryMunicipalityIds(
+              "Prokurime"
+            );
             baselineResult = await scrapeProkurimeAppExport({
               year,
               limit,
@@ -2280,7 +2457,7 @@ app.post("/api/scrape/run", async (req, res) => {
             : null;
 
           const shouldPublish =
-            !isNationwideProkurime && (forcePublish || registryRow.verification_status === "CHECKED");
+            !isNationwideProkurime && (forcePublish || isCategoryChecked(registryRow, "Prokurime"));
 
           let inserted = 0;
           let updated = 0;
@@ -2599,7 +2776,7 @@ app.post("/api/scrape/run", async (req, res) => {
           }
 
           const shouldPublish =
-            forcePublish || registryRow.verification_status === "CHECKED";
+            forcePublish || isCategoryChecked(registryRow, "Konsultime publike");
           const defaultStatus = shouldPublish ? "published" : "draft";
 
           let inserted = 0;
@@ -2908,9 +3085,7 @@ app.post("/api/scrape/run", async (req, res) => {
           }
         }
 
-        // auto-publish if registry already CHECKED, or allow explicit forced publish for one-off runs.
-        const shouldPublish =
-          forcePublish || registryRow.verification_status === "CHECKED";
+        const shouldPublish = forcePublish || isCategoryChecked(registryRow, "Vendime");
         const defaultStatus = shouldPublish ? "published" : "draft";
 
         // insert items

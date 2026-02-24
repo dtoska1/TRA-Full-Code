@@ -21,6 +21,9 @@ async function fetchCoverageSummary(pool, generatedAtUtc = new Date().toISOStrin
         sr.prokurime_url,
         sr.konsultime_url,
         sr.verification_status,
+        sr.vendime_checked,
+        sr.prokurime_checked,
+        sr.konsultime_checked,
         sr.last_error_type,
         sr.cooldown_until_utc,
         sr.last_checked_utc
@@ -32,6 +35,9 @@ async function fetchCoverageSummary(pool, generatedAtUtc = new Date().toISOStrin
           prokurime_url,
           konsultime_url,
           verification_status,
+          vendime_checked,
+          prokurime_checked,
+          konsultime_checked,
           last_error_type,
           cooldown_until_utc,
           last_checked_utc
@@ -70,6 +76,12 @@ async function fetchCoverageSummary(pool, generatedAtUtc = new Date().toISOStrin
           ELSE ''
         END
       ) <> '' AS registry_url_set,
+      CASE
+        WHEN c.category = 'Vendime' THEN COALESCE(r.vendime_checked, FALSE)
+        WHEN c.category = 'Prokurime' THEN COALESCE(r.prokurime_checked, FALSE)
+        WHEN c.category = 'Konsultime publike' THEN COALESCE(r.konsultime_checked, FALSE)
+        ELSE FALSE
+      END AS category_checked,
       r.verification_status,
       r.last_error_type,
       r.cooldown_until_utc,

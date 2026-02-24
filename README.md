@@ -97,6 +97,21 @@ The migration:
 - Preserves `verification_status` values (no global `CHECKED` update).
 - Adds minimal provenance columns on `items`: `source_origin`, `source_page_url`.
 
+### 5.2) Category-scoped CHECKED flags (publish automation)
+
+Run migration `018_source_registry_category_checked_flags.sql`:
+
+```powershell
+Get-Content -Raw -Encoding UTF8 .\018_source_registry_category_checked_flags.sql | docker exec -i tra_postgres psql -U tra -d tra -v ON_ERROR_STOP=1
+```
+
+This adds per-category flags on `source_registry`:
+- `vendime_checked`
+- `prokurime_checked`
+- `konsultime_checked`
+
+No automatic backfill is performed by migration.
+
 ### 6) Run the backend API
 
 ```bash
@@ -230,7 +245,8 @@ Backend API protections now include:
 - Parameterized SQL queries (`$1`, `$2`, ...) for route-side DB access.
 - Input validation on `/api/feed` (`page`, `limit`, `municipality`, `q`).
 - Basic rate limiting on `/api/*` to reduce abuse bursts.
-- Admin-token protection on `/api/scrape/*`, `/api/debug/*`, and `/api/admin/coverage`.
+- Admin-token protection on `/api/scrape/*`, `/api/debug/*`, and `/api/admin/*`.
+- Separate admin rate limiting on `/api/admin/*`.
 
 Quick validation checks (should return HTTP 400 with `{"ok":false,"error":"bad_request","message":"..."}`):
 
@@ -252,6 +268,19 @@ curl.exe -i "http://localhost:5050/api/admin/coverage" -H "Authorization: Bearer
 Expected:
 - without token: HTTP `401`
 - with token: HTTP `200` and coverage payload
+
+Admin publish/check endpoints:
+
+```powershell
+curl.exe -i -X POST "http://localhost:5050/api/admin/source/checked?municipality=tirane&category=Vendime&checked=true"
+curl.exe -i -X POST "http://localhost:5050/api/admin/source/checked?municipality=tirane&category=Vendime&checked=true" -H "Authorization: Bearer <ADMIN_TOKEN>"
+curl.exe -i -X POST "http://localhost:5050/api/admin/publish?municipality=tirane&category=Vendime&year=2025" -H "Authorization: Bearer <ADMIN_TOKEN>"
+```
+
+Expected:
+- `/api/admin/source/checked` without token: HTTP `401`
+- `/api/admin/source/checked` with token: HTTP `200` and `checked=true|false`
+- `/api/admin/publish` with token: HTTP `200` and numeric `published_updated`
 
 ### 9) Run one end-to-end scraper first (Tirane Vendime)
 
@@ -448,6 +477,18 @@ Expected response counters for year-filtered runs:
 - `skipped_missing_date`
 - `skipped_wrong_year`
 - `skipped_no_municipality_match` (Prokurime)
+
+Category-scoped CHECKED backfill script (operator-run, explicit scope):
+
+```bash
+node backend/scripts/backfill_checked_scope.js --category=Vendime --dry_run=true
+node backend/scripts/backfill_checked_scope.js --category=Vendime
+```
+
+Notes:
+- Backfills only one selected category at a time (`Vendime`, `Prokurime`, `Konsultime publike`).
+- Uses legacy `verification_status='CHECKED'` intent only for the selected category.
+- Does not set all three category flags automatically.
 
 ## Next “must do” items for a public-ready v1
 

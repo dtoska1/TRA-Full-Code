@@ -13,6 +13,7 @@ const SQL_FILES = [
   "006_seed_source_registry.sql",
   "014_municipality_key_aliases.sql",
   "015_vendime_al_canonical_and_item_provenance.sql",
+  "018_source_registry_category_checked_flags.sql",
 ];
 
 function sanitizeSql(sqlText) {
