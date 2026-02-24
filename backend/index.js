@@ -1,5 +1,7 @@
 // backend/index.js
 const path = require("path");
+const fs = require("fs");
+const fsp = require("fs/promises");
 
 require("dotenv").config({
   path: process.env.DOTENV_CONFIG_PATH || path.join(__dirname, ".env"),
@@ -10,6 +12,7 @@ const cors = require("cors");
 const helmet = require("helmet");
 const morgan = require("morgan");
 const rateLimit = require("express-rate-limit");
+const multer = require("multer");
 const cheerio = require("cheerio");
 const { Pool } = require("pg");
 const dns = require("dns");
@@ -193,6 +196,12 @@ const SCRAPE_REQUEST_TIMEOUT_MS = (() => {
   const raw = Number.parseInt(String(process.env.SCRAPE_REQUEST_TIMEOUT_MS || ""), 10);
   return Number.isFinite(raw) && raw > 0 ? raw : 20000;
 })();
+const MANUAL_UPLOAD_MAX_BYTES = (() => {
+  const raw = Number.parseInt(String(process.env.MANUAL_UPLOAD_MAX_BYTES || ""), 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 20 * 1024 * 1024;
+})();
+const UPLOADS_DIR = path.resolve(__dirname, "uploads");
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const KONSULTIME_FALLBACK_KEYWORDS = [
   "njoftime",
   "proces",
@@ -204,6 +213,40 @@ const KONSULTIME_FALLBACK_KEYWORDS = [
 const KONSULTIME_FALLBACK_MAX_LINKS = 6;
 const KONSULTIME_NO_YEAR_KEEP_RE =
   /\b(konsultim[a-z]*|konsultime[a-z]*|degjes[a-z]*|njoftim[a-z]*|proces\s*verbal[a-z]*|takim[a-z]*|projekt[a-z]*|draft[a-z]*)\b/;
+
+try {
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+} catch (err) {
+  console.warn("Could not ensure uploads directory:", safePublicErrorMessage(err, "mkdir failed"));
+}
+
+const manualUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: MANUAL_UPLOAD_MAX_BYTES,
+    files: 1,
+  },
+});
+
+function parseManualUpload(req, res, next) {
+  manualUpload.single("file")(req, res, (err) => {
+    if (!err) return next();
+
+    if (err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE") {
+      return res.status(413).json({
+        ok: false,
+        error: "payload_too_large",
+        message: `Uploaded file exceeds MANUAL_UPLOAD_MAX_BYTES (${MANUAL_UPLOAD_MAX_BYTES}).`,
+      });
+    }
+
+    if (err instanceof multer.MulterError) {
+      return badRequest(res, `Invalid upload payload: ${err.code}`);
+    }
+
+    return next(err);
+  });
+}
 
 pool.on("connect", (client) => {
   client
@@ -456,6 +499,117 @@ function safePublicErrorMessage(err, fallbackMessage) {
     .replace(/bearer\s+[A-Za-z0-9\-\._~\+\/]+=*/gi, "bearer ***");
 
   return redacted.length > 200 ? fallbackMessage : redacted;
+}
+
+function isUuid(value) {
+  return UUID_RE.test(String(value || "").trim());
+}
+
+function parseHttpUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  try {
+    const parsed = new URL(raw);
+    if (!["http:", "https:"].includes(parsed.protocol)) return null;
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
+function hasPdfMagicBytes(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 5) return false;
+  return buffer.slice(0, 5).toString("ascii") === "%PDF-";
+}
+
+function manualDedupKeyV1({
+  municipalityId,
+  category,
+  titleNormalized,
+  publishedDate,
+  sourceUrl,
+  fileSha256,
+}) {
+  const normalizedCategory = String(category || "")
+    .toLowerCase()
+    .replace(/\s+/g, "-");
+  const payload = [
+    String(municipalityId || ""),
+    normalizedCategory,
+    String(titleNormalized || ""),
+    String(publishedDate || "unknown"),
+    String(sourceUrl || ""),
+    String(fileSha256 || ""),
+  ].join("|");
+  const hash = crypto.createHash("sha1").update(payload).digest("hex").slice(0, 20);
+  return `manual|v1|${municipalityId}|${normalizedCategory}|h:${hash}`;
+}
+
+function buildLocalUploadStorageUri(fileName) {
+  return `local://uploads/${fileName}`;
+}
+
+function resolveLocalUploadPath(storageUri) {
+  const uri = String(storageUri || "").trim();
+  const match = /^local:\/\/uploads\/([0-9a-f-]+\.pdf)$/i.exec(uri);
+  if (!match) return null;
+  const fileName = match[1];
+  const resolvedPath = path.resolve(UPLOADS_DIR, fileName);
+  const relative = path.relative(UPLOADS_DIR, resolvedPath);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) return null;
+  return resolvedPath;
+}
+
+function sanitizeDownloadName(fileName, attachmentId) {
+  const raw = String(fileName || "").trim();
+  const cleaned = raw
+    .replace(/[^\w.\-]+/g, "_")
+    .replace(/^_+/, "")
+    .slice(0, 120);
+  if (cleaned && cleaned.toLowerCase().endsWith(".pdf")) return cleaned;
+  if (cleaned) return `${cleaned}.pdf`;
+  return `${attachmentId}.pdf`;
+}
+
+async function resolveAttachmentForServing(attachmentId, { publicOnlyPublished }) {
+  if (!isUuid(attachmentId)) return null;
+
+  const result = await pool.query(
+    `
+    SELECT
+      a.id,
+      a.file_name,
+      a.mime_type,
+      a.size_bytes,
+      a.storage_uri,
+      i.status AS item_status
+    FROM attachments a
+    JOIN items i ON i.id = a.item_id
+    WHERE a.id = $1
+      AND ($2::boolean = FALSE OR i.status = 'published')
+    LIMIT 1
+    `,
+    [attachmentId, publicOnlyPublished]
+  );
+  if (!result.rowCount) return null;
+  const row = result.rows[0];
+  const localPath = resolveLocalUploadPath(row.storage_uri);
+  if (!localPath) return null;
+  try {
+    const stat = await fsp.stat(localPath);
+    if (!stat.isFile()) return null;
+    return {
+      id: row.id,
+      fileName: sanitizeDownloadName(row.file_name, row.id),
+      mimeType: String(row.mime_type || "").trim() || "application/pdf",
+      localPath,
+      sizeBytes: Number.isFinite(Number(row.size_bytes))
+        ? Number(row.size_bytes)
+        : stat.size,
+    };
+  } catch {
+    return null;
+  }
 }
 
 // --------------------
@@ -1598,9 +1752,12 @@ app.get("/", (req, res) => {
       "/api/debug/db-encoding",
       "/api/municipalities",
       "/api/admin/coverage",
+      "/api/admin/items/manual",
+      "/api/admin/files/:id",
       "/api/admin/publish",
       "/api/admin/source/checked",
       "/api/feed",
+      "/api/public/files/:id",
       "/api/scrape/tirana/vendime",
       "/api/scrape/run",
     ],
@@ -1842,6 +1999,301 @@ app.post("/api/admin/publish", requireAdmin, async (req, res) => {
       ok: false,
       error: "db_error",
       message: safePublicErrorMessage(err, "Database operation failed"),
+    });
+  }
+});
+
+app.post("/api/admin/items/manual", requireAdmin, parseManualUpload, async (req, res) => {
+  const municipality =
+    req.query.municipality !== undefined ? String(req.query.municipality) : req.body?.municipality;
+  const municipality_id =
+    req.query.municipality_id !== undefined
+      ? String(req.query.municipality_id)
+      : req.body?.municipality_id;
+  const requestedCategory =
+    req.query.category !== undefined ? req.query.category : req.body?.category;
+  const category = resolveSupportedCategory(requestedCategory, null);
+  if (!category) {
+    return badRequest(
+      res,
+      `Invalid category. Supported categories: ${SUPPORTED_CATEGORIES.join(", ")}`
+    );
+  }
+
+  const titleRaw = req.query.title !== undefined ? req.query.title : req.body?.title;
+  const title = String(titleRaw || "").trim();
+  if (!title) {
+    return badRequest(res, "Invalid title. title is required.");
+  }
+
+  const publishedDateRaw =
+    req.query.published_date !== undefined ? req.query.published_date : req.body?.published_date;
+  let publishedDate = null;
+  if (
+    publishedDateRaw !== undefined &&
+    publishedDateRaw !== null &&
+    String(publishedDateRaw).trim() !== ""
+  ) {
+    publishedDate = sanitizeISODate(String(publishedDateRaw).trim());
+    if (!publishedDate) {
+      return badRequest(res, "Invalid published_date. Expected YYYY-MM-DD.");
+    }
+  }
+
+  const sourceUrlRaw = req.query.source_url !== undefined ? req.query.source_url : req.body?.source_url;
+  const sourceUrlProvided =
+    sourceUrlRaw !== undefined && sourceUrlRaw !== null && String(sourceUrlRaw).trim() !== "";
+  const sourceUrl = sourceUrlProvided ? parseHttpUrl(sourceUrlRaw) : null;
+  if (sourceUrlProvided && !sourceUrl) {
+    return badRequest(res, "Invalid source_url. Use an absolute http/https URL.");
+  }
+
+  const sourcePageUrlRaw =
+    req.query.source_page_url !== undefined
+      ? req.query.source_page_url
+      : req.body?.source_page_url;
+  const sourcePageUrlProvided =
+    sourcePageUrlRaw !== undefined &&
+    sourcePageUrlRaw !== null &&
+    String(sourcePageUrlRaw).trim() !== "";
+  const sourcePageUrl = sourcePageUrlProvided ? parseHttpUrl(sourcePageUrlRaw) : null;
+  if (sourcePageUrlProvided && !sourcePageUrl) {
+    return badRequest(res, "Invalid source_page_url. Use an absolute http/https URL.");
+  }
+
+  const uploadFile = req.file && Buffer.isBuffer(req.file.buffer) ? req.file : null;
+  if ((sourceUrlProvided && uploadFile) || (!sourceUrlProvided && !uploadFile)) {
+    return badRequest(res, "Provide exactly one of source_url or file.");
+  }
+
+  if (uploadFile && !hasPdfMagicBytes(uploadFile.buffer)) {
+    return badRequest(res, "Invalid file. Uploaded file must be a PDF.");
+  }
+
+  let municipalityId = null;
+  try {
+    municipalityId = await getMunicipalityId({ municipality, municipality_id });
+  } catch (err) {
+    return res.status(500).json({
+      ok: false,
+      error: "db_error",
+      message: safePublicErrorMessage(err, "Database operation failed"),
+    });
+  }
+  if (!municipalityId) {
+    return badRequest(res, "Invalid municipality (name_key/name_sq) or municipality_id");
+  }
+
+  const titleNormalized = normalizeTitle(title);
+  const sourceOrigin = getHost(sourcePageUrl || sourceUrl || "") || null;
+  const dedupKey = manualDedupKeyV1({
+    municipalityId,
+    category,
+    titleNormalized,
+    publishedDate,
+    sourceUrl,
+    fileSha256: uploadFile
+      ? crypto.createHash("sha256").update(uploadFile.buffer).digest("hex")
+      : null,
+  });
+  const dateUnknown = publishedDate ? false : true;
+  const sourceUrlMissingReason = sourceUrl ? null : "manual_upload";
+
+  let stagedFilePath = null;
+  let attachmentId = null;
+  let itemId = null;
+  let systemUserId = null;
+  let client = null;
+  try {
+    client = await pool.connect();
+    await client.query("BEGIN");
+    systemUserId = await getSystemUserId();
+
+    const itemInsert = await client.query(
+      `
+      INSERT INTO items (
+        municipality_id,
+        category,
+        title,
+        title_normalized,
+        published_date,
+        date_unknown,
+        source_url,
+        source_page_url,
+        source_origin,
+        source_url_missing_reason,
+        ingestion_method,
+        dedup_key,
+        status,
+        created_by_user_id
+      )
+      VALUES (
+        $1, $2, $3, $4, $5::date, $6, $7, $8, $9, $10, 'manual', $11, 'draft', $12
+      )
+      RETURNING id
+      `,
+      [
+        municipalityId,
+        category,
+        title,
+        titleNormalized,
+        publishedDate,
+        dateUnknown,
+        sourceUrl,
+        sourcePageUrl,
+        sourceOrigin,
+        sourceUrlMissingReason,
+        dedupKey,
+        systemUserId,
+      ]
+    );
+    itemId = itemInsert.rows[0].id;
+
+    if (uploadFile) {
+      const fileUuid = crypto.randomUUID();
+      const storedFileName = `${fileUuid}.pdf`;
+      const storageUri = buildLocalUploadStorageUri(storedFileName);
+      const sha256 = crypto.createHash("sha256").update(uploadFile.buffer).digest("hex");
+      stagedFilePath = path.resolve(UPLOADS_DIR, storedFileName);
+
+      const attachmentInsert = await client.query(
+        `
+        INSERT INTO attachments (
+          item_id,
+          file_name,
+          mime_type,
+          size_bytes,
+          storage_uri,
+          sha256,
+          source_url
+        )
+        VALUES (
+          $1, $2, 'application/pdf', $3, $4, $5, NULL
+        )
+        RETURNING id
+        `,
+        [itemId, storedFileName, uploadFile.size, storageUri, sha256]
+      );
+      attachmentId = attachmentInsert.rows[0].id;
+
+      await fsp.mkdir(UPLOADS_DIR, { recursive: true });
+      await fsp.writeFile(stagedFilePath, uploadFile.buffer);
+    }
+
+    await client.query("COMMIT");
+  } catch (err) {
+    try {
+      if (client) await client.query("ROLLBACK");
+    } catch {}
+    if (stagedFilePath) {
+      try {
+        await fsp.unlink(stagedFilePath);
+      } catch {}
+    }
+    if (String(err?.code || "") === "23505") {
+      return res.status(409).json({
+        ok: false,
+        error: "conflict",
+        message: "A matching item already exists.",
+      });
+    }
+    return res.status(500).json({
+      ok: false,
+      error: "server_error",
+      message: safePublicErrorMessage(err, "Manual item creation failed"),
+    });
+  } finally {
+    if (client) client.release();
+  }
+
+  return res.status(201).json({
+    ok: true,
+    item_id: itemId,
+    attachment_id: attachmentId,
+    municipality_id: municipalityId,
+    category,
+    status: "draft",
+  });
+});
+
+app.get("/api/public/files/:id", async (req, res) => {
+  try {
+    const attachmentId = String(req.params.id || "").trim();
+    const file = await resolveAttachmentForServing(attachmentId, {
+      publicOnlyPublished: true,
+    });
+    if (!file) {
+      return res.status(404).json({
+        ok: false,
+        error: "not_found",
+        message: "File not found.",
+      });
+    }
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Length", String(file.sizeBytes));
+    res.setHeader(
+      "Content-Disposition",
+      `inline; filename="${file.fileName.replace(/"/g, "")}"`
+    );
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    const stream = fs.createReadStream(file.localPath);
+    stream.on("error", () => {
+      if (!res.headersSent) {
+        return res.status(404).json({
+          ok: false,
+          error: "not_found",
+          message: "File not found.",
+        });
+      }
+      return res.destroy();
+    });
+    return stream.pipe(res);
+  } catch (err) {
+    return res.status(500).json({
+      ok: false,
+      error: "server_error",
+      message: safePublicErrorMessage(err, "File read failed"),
+    });
+  }
+});
+
+app.get("/api/admin/files/:id", requireAdmin, async (req, res) => {
+  try {
+    const attachmentId = String(req.params.id || "").trim();
+    const file = await resolveAttachmentForServing(attachmentId, {
+      publicOnlyPublished: false,
+    });
+    if (!file) {
+      return res.status(404).json({
+        ok: false,
+        error: "not_found",
+        message: "File not found.",
+      });
+    }
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Length", String(file.sizeBytes));
+    res.setHeader(
+      "Content-Disposition",
+      `inline; filename="${file.fileName.replace(/"/g, "")}"`
+    );
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    const stream = fs.createReadStream(file.localPath);
+    stream.on("error", () => {
+      if (!res.headersSent) {
+        return res.status(404).json({
+          ok: false,
+          error: "not_found",
+          message: "File not found.",
+        });
+      }
+      return res.destroy();
+    });
+    return stream.pipe(res);
+  } catch (err) {
+    return res.status(500).json({
+      ok: false,
+      error: "server_error",
+      message: safePublicErrorMessage(err, "File read failed"),
     });
   }
 });

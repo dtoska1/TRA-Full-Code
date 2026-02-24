@@ -31,6 +31,8 @@ backend/.pw-profile/
 **/storage_state.json
 backend/tmp/
 backend/tmp/*
+backend/uploads/
+backend/uploads/*
 
 # local junk
 /tatus

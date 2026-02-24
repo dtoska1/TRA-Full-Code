@@ -80,6 +80,7 @@ Example (local-only values):
 - `REDIS_URL=redis://localhost:6379`
 - `MEILI_HOST=http://localhost:7700`
 - `MEILI_MASTER_KEY=<MEILI_MASTER_KEY>`
+- `MANUAL_UPLOAD_MAX_BYTES=20971520`
 
 > `POSTGRES_PASSWORD` should match what is set in `docker-compose.yml` for the Postgres service (or whatever password your existing DB volume was initialized with).
 
@@ -281,6 +282,28 @@ Expected:
 - `/api/admin/source/checked` without token: HTTP `401`
 - `/api/admin/source/checked` with token: HTTP `200` and `checked=true|false`
 - `/api/admin/publish` with token: HTTP `200` and numeric `published_updated`
+
+Admin manual item + file endpoints:
+
+```powershell
+curl.exe -i -X POST "http://localhost:5050/api/admin/items/manual" ^
+  -H "Authorization: Bearer <ADMIN_TOKEN>" ^
+  -H "Content-Type: application/json" ^
+  --data "{\"municipality\":\"tirane\",\"category\":\"Vendime\",\"title\":\"Manual source URL item\",\"published_date\":\"2025-01-15\",\"source_url\":\"https://example.org/manual-item.pdf\"}"
+
+curl.exe -i -X POST "http://localhost:5050/api/admin/items/manual" ^
+  -H "Authorization: Bearer <ADMIN_TOKEN>" ^
+  -F municipality=tirane ^
+  -F "category=Vendime" ^
+  -F "title=Manual PDF upload item" ^
+  -F "published_date=2025-01-15" ^
+  -F "file=@vendim-12.pdf;type=application/pdf"
+```
+
+File visibility behavior:
+- `GET /api/public/files/:id` returns HTTP `404` unless the parent item is `published`.
+- `GET /api/admin/files/:id` requires admin token and allows draft/published file retrieval.
+- Public endpoint returns strict `404` for non-existent, invalid id, draft, or missing file cases.
 
 ### 9) Run one end-to-end scraper first (Tirane Vendime)
 
