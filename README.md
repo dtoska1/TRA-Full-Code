@@ -340,6 +340,24 @@ How it works:
   - `skipped_missing_date`
   - `skipped_wrong_year`
 
+Konsultime nationwide runner (single `next_offset` resume pointer):
+
+```bash
+node backend/scripts/run_konsultime_nationwide.js --year=2025 --limit=80 --sleep_ms=1200 --max_runtime_ms=0 --resume=true
+```
+
+How it works:
+
+- Calls `POST /api/scrape/run?category=Konsultime%20publike&year=YYYY&offset=...&limit=...`.
+- Uses `next_offset` from API response as the authoritative resume pointer.
+- Writes progress to `backend/tmp/konsultime_progress_YYYY.json`.
+- If HTTP `429` is returned, retries the same offset with exponential backoff.
+- Supports compatibility alias `--start_offset=...` (same as `--offset=...`).
+- Year-mode responses include strict counters:
+  - `skipped_missing_date`
+  - `skipped_wrong_year`
+- Existing no-year source policy remains unchanged in `/api/scrape/run` for Konsultime.
+
 Registry category batch runner (Vendime / Prokurime / Konsultime):
 
 ```bash

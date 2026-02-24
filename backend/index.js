@@ -1965,15 +1965,22 @@ app.post("/api/scrape/run", async (req, res) => {
     (municipality_id !== null && String(municipality_id).trim() !== "");
   const isProkurimeCategory = category === "Prokurime";
   const isVendimeCategory = category === "Vendime";
+  const isKonsultimeCategory = category === "Konsultime publike";
   let isNationwideProkurime = false;
   let isNationwideVendime = false;
+  let isNationwideKonsultime = false;
   let vendimeNationwideState = null;
+  let konsultimeNationwideState = null;
   const registryUrlColumn = getRegistryUrlColumnForCategory(category);
   let baselineTargetUrl = null;
 
   try {
     municipalityId = await getMunicipalityId({ municipality, municipality_id });
-    if ((isProkurimeCategory || isVendimeCategory) && hasMunicipalitySelector && !municipalityId) {
+    if (
+      (isProkurimeCategory || isVendimeCategory || isKonsultimeCategory) &&
+      hasMunicipalitySelector &&
+      !municipalityId
+    ) {
       return res.status(400).json({
         ok: false,
         error: "bad_request",
@@ -1982,8 +1989,9 @@ app.post("/api/scrape/run", async (req, res) => {
     }
     isNationwideProkurime = isProkurimeCategory && !municipalityId;
     isNationwideVendime = isVendimeCategory && !hasMunicipalitySelector && !municipalityId;
+    isNationwideKonsultime = isKonsultimeCategory && !hasMunicipalitySelector && !municipalityId;
 
-    if (isNationwideVendime) {
+    if (isNationwideVendime || isNationwideKonsultime) {
       const nationwideRows = await pool.query(
         `
         SELECT m.id AS municipality_id, m.name_key
@@ -1996,6 +2004,28 @@ app.post("/api/scrape/run", async (req, res) => {
       );
       const total = nationwideRows.rowCount;
       if (offset >= total) {
+        if (isNationwideKonsultime) {
+          return res.json({
+            ok: true,
+            category: "Konsultime publike",
+            nationwide: true,
+            offset,
+            next_offset: null,
+            parsed_rows_total: 0,
+            parsed_rows_kept: 0,
+            inserted: 0,
+            updated: 0,
+            published_updated: 0,
+            skipped: 0,
+            skipped_missing_url: 0,
+            skipped_missing_date: 0,
+            skipped_wrong_year: 0,
+            skipped_no_year_keyword: 0,
+            skipped_no_year_source_policy: 0,
+            skipped_no_municipality_match: 0,
+            next: "Konsultime nationwide run completed.",
+          });
+        }
         return res.json({
           ok: true,
           category: "Vendime",
@@ -2021,14 +2051,19 @@ app.post("/api/scrape/run", async (req, res) => {
       const selected = nationwideRows.rows[offset];
       municipalityId = String(selected.municipality_id || "").trim();
       const nextOffset = offset + 1 < total ? offset + 1 : null;
-      vendimeNationwideState = {
+      const state = {
         offset,
         next_offset: nextOffset,
         municipality_name_key: String(selected.name_key || "").trim() || null,
       };
+      if (isNationwideVendime) {
+        vendimeNationwideState = state;
+      } else {
+        konsultimeNationwideState = state;
+      }
     }
 
-    if (!isProkurimeCategory && !isNationwideVendime && !municipalityId) {
+    if (!isProkurimeCategory && !isNationwideVendime && !isNationwideKonsultime && !municipalityId) {
       return res.status(400).json({
         ok: false,
         error: "bad_request",
@@ -2036,7 +2071,7 @@ app.post("/api/scrape/run", async (req, res) => {
       });
     }
 
-    if (!isNationwideProkurime && !isNationwideVendime) {
+    if (!isNationwideProkurime && !isNationwideVendime && !isNationwideKonsultime) {
       registryRow = await loadRegistryRow(municipalityId);
       if (!registryRow) {
         return res.status(404).json({
@@ -2107,7 +2142,7 @@ app.post("/api/scrape/run", async (req, res) => {
         `,
         [registryRow.id, nextBuckets]
       );
-    } else if (isNationwideVendime) {
+    } else if (isNationwideVendime || isNationwideKonsultime) {
       registryRow = await loadRegistryRow(municipalityId);
       if (!registryRow) {
         return res.status(404).json({
@@ -2117,8 +2152,11 @@ app.post("/api/scrape/run", async (req, res) => {
         });
       }
 
-      baselineTargetUrl = applyYearTemplate((registryUrlColumn ? registryRow[registryUrlColumn] : null) || null, year);
-      if (!baselineTargetUrl) {
+      baselineTargetUrl = applyYearTemplate(
+        (registryUrlColumn ? registryRow[registryUrlColumn] : null) || null,
+        year
+      );
+      if (isNationwideVendime && !baselineTargetUrl) {
         const tiranaId = await getTiranaId();
         if (tiranaId && municipalityId === tiranaId) {
           baselineTargetUrl = `https://tirana.al/kategoria-e-publikimit/vendime-te-keshillit-bashkiak-${year}-4290`;
@@ -2136,13 +2174,22 @@ app.post("/api/scrape/run", async (req, res) => {
         );
         return res.json({
           ok: true,
-          category: "Vendime",
+          category: isNationwideKonsultime ? "Konsultime publike" : "Vendime",
           nationwide: true,
           municipality_id: municipalityId,
-          municipality: vendimeNationwideState?.municipality_name_key || municipalityId,
+          municipality:
+            konsultimeNationwideState?.municipality_name_key ||
+            vendimeNationwideState?.municipality_name_key ||
+            municipalityId,
           used_registry_id: registryRow.id,
-          offset: vendimeNationwideState?.offset,
-          next_offset: vendimeNationwideState?.next_offset ?? null,
+          offset:
+            konsultimeNationwideState?.offset !== undefined
+              ? konsultimeNationwideState.offset
+              : vendimeNationwideState?.offset,
+          next_offset:
+            konsultimeNationwideState?.next_offset !== undefined
+              ? konsultimeNationwideState.next_offset
+              : vendimeNationwideState?.next_offset ?? null,
           parsed_rows_total: 0,
           parsed_rows_kept: 0,
           inserted: 0,
@@ -2152,11 +2199,15 @@ app.post("/api/scrape/run", async (req, res) => {
           skipped_missing_url: 1,
           skipped_missing_date: 0,
           skipped_wrong_year: 0,
-          skipped_not_vendim: 0,
-          skipped_not_municipality: 0,
+          skipped_no_year_keyword: isNationwideKonsultime ? 0 : undefined,
+          skipped_no_year_source_policy: isNationwideKonsultime ? 0 : undefined,
+          skipped_not_vendim: isNationwideVendime ? 0 : undefined,
+          skipped_not_municipality: isNationwideVendime ? 0 : undefined,
           skipped_no_municipality_match: 0,
           last_error_type: "CONFIG_MISSING_URL",
-          next: "Next: continue vendime nationwide run from next_offset.",
+          next: isNationwideKonsultime
+            ? "Next: continue konsultime nationwide run from next_offset."
+            : "Next: continue vendime nationwide run from next_offset.",
         });
       }
 
@@ -2727,9 +2778,13 @@ app.post("/api/scrape/run", async (req, res) => {
 
           return {
             ok: true,
-            municipality: municipality || municipalityId,
+            municipality:
+              konsultimeNationwideState?.municipality_name_key || municipality || municipalityId,
             municipality_id: municipalityId,
             category,
+            nationwide: !!konsultimeNationwideState,
+            offset: konsultimeNationwideState?.offset,
+            next_offset: konsultimeNationwideState?.next_offset,
             used_registry_id: registryRow.id,
             scraped_from: baselineSummary.used_url || baselineTargetUrl,
             parsed_rows_total:
@@ -2754,11 +2809,15 @@ app.post("/api/scrape/run", async (req, res) => {
                 ? fallbackSummary
                 : undefined,
             sample_title: sample_kept_title || baselineResult.items[0]?.title || null,
-            next: "Next: verify /api/feed returns this municipality/category.",
+            next: konsultimeNationwideState
+              ? "Next: continue konsultime nationwide run from next_offset."
+              : "Next: verify /api/feed returns this municipality/category.",
           };
         })(),
         SCRAPE_JOB_TIMEOUT_MS,
-        `scrape municipality ${municipalityId} category ${category}`
+        konsultimeNationwideState
+          ? `scrape nationwide category ${category} municipality ${municipalityId}`
+          : `scrape municipality ${municipalityId} category ${category}`
       );
 
       return res.json(successPayload);

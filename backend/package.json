@@ -16,6 +16,7 @@
     "run:batch:konsultime": "node scripts/run_registry_category_batch.js --category=\"Konsultime publike\"",
     "run:prokurime:nationwide": "node scripts/run_prokurime_nationwide.js",
     "run:vendime:nationwide": "node scripts/run_vendime_nationwide.js",
+    "run:konsultime:nationwide": "node scripts/run_konsultime_nationwide.js",
     "audit:municipality-keys": "node scripts/audit_municipality_keys.js",
     "discover:vendime": "node scripts/discover_vendime_urls.js",
     "apply:vendime": "node scripts/apply_vendime_url.js",
