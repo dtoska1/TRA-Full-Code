@@ -189,6 +189,11 @@ Feed page shape (`ok`, `page`, `limit`, `total`, `items`):
 curl.exe "http://localhost:5050/api/feed?page=1&limit=5"
 ```
 
+Feed item linkage fields (additive):
+- `attachment_count`
+- `primary_attachment_id`
+- `primary_attachment_public_url` (relative `/api/public/files/:id`)
+
 Feed filtered by municipality key (example: `tirana`):
 
 ```powershell
@@ -304,6 +309,28 @@ File visibility behavior:
 - `GET /api/public/files/:id` returns HTTP `404` unless the parent item is `published`.
 - `GET /api/admin/files/:id` requires admin token and allows draft/published file retrieval.
 - Public endpoint returns strict `404` for non-existent, invalid id, draft, or missing file cases.
+
+Public item detail endpoint:
+
+```powershell
+curl.exe -i "http://localhost:5050/api/items/<ITEM_ID>"
+```
+
+Expected:
+- draft/missing/invalid UUID: HTTP `404`
+- published item: HTTP `200` with `item`, `attachments`, `attachment_count`, `primary_attachment_id`, `primary_attachment_public_url`
+
+Admin coverage attachment linkage fields (additive):
+- `published_attachment_count`
+- `draft_attachment_count`
+- `latest_attachment_id`
+- `latest_attachment_item_status`
+- `latest_admin_file_url`
+- `latest_public_file_url` (only when latest attachment item is published)
+
+`POST /api/admin/publish` response now includes additive counters:
+- `published_with_attachments`
+- `attachments_now_public_count`
 
 ### 9) Run one end-to-end scraper first (Tirane Vendime)
 

@@ -549,6 +549,16 @@ function buildLocalUploadStorageUri(fileName) {
   return `local://uploads/${fileName}`;
 }
 
+function buildPublicFilePath(attachmentId) {
+  const id = String(attachmentId || "").trim();
+  return id ? `/api/public/files/${encodeURIComponent(id)}` : null;
+}
+
+function buildAdminFilePath(attachmentId) {
+  const id = String(attachmentId || "").trim();
+  return id ? `/api/admin/files/${encodeURIComponent(id)}` : null;
+}
+
 function resolveLocalUploadPath(storageUri) {
   const uri = String(storageUri || "").trim();
   const match = /^local:\/\/uploads\/([0-9a-f-]+\.pdf)$/i.exec(uri);
@@ -1757,6 +1767,7 @@ app.get("/", (req, res) => {
       "/api/admin/publish",
       "/api/admin/source/checked",
       "/api/feed",
+      "/api/items/:id",
       "/api/public/files/:id",
       "/api/scrape/tirana/vendime",
       "/api/scrape/run",
@@ -1855,7 +1866,27 @@ app.get("/api/status/vendime", async (req, res) => {
 app.get("/api/admin/coverage", requireAdmin, async (req, res) => {
   try {
     const summary = await fetchCoverageSummary(pool);
-    res.json(summary);
+    const items = Array.isArray(summary.items)
+      ? summary.items.map((row) => {
+          const latestAttachmentId = String(row.latest_attachment_id || "").trim() || null;
+          const latestAttachmentItemStatus =
+            String(row.latest_attachment_item_status || "").trim().toLowerCase() || null;
+          return {
+            ...row,
+            latest_admin_file_url: latestAttachmentId
+              ? buildAdminFilePath(latestAttachmentId)
+              : null,
+            latest_public_file_url:
+              latestAttachmentId && latestAttachmentItemStatus === "published"
+                ? buildPublicFilePath(latestAttachmentId)
+                : null,
+          };
+        })
+      : [];
+    res.json({
+      ...summary,
+      items,
+    });
   } catch (err) {
     res.status(500).json({
       ok: false,
@@ -1969,21 +2000,43 @@ app.post("/api/admin/publish", requireAdmin, async (req, res) => {
 
     const publishUpdate = await pool.query(
       `
-      UPDATE items
-      SET status = 'published',
-          updated_at = now()
-      WHERE municipality_id = $1
-        AND category = $2
-        AND status <> 'published'
-        AND (
-          $3::int IS NULL OR (
-            published_date IS NOT NULL
-            AND EXTRACT(YEAR FROM published_date)::int = $3
+      WITH updated_items AS (
+        UPDATE items
+        SET status = 'published',
+            updated_at = now()
+        WHERE municipality_id = $1
+          AND category = $2
+          AND status <> 'published'
+          AND (
+            $3::int IS NULL OR (
+              published_date IS NOT NULL
+              AND EXTRACT(YEAR FROM published_date)::int = $3
+            )
           )
-        )
+        RETURNING id
+      ),
+      updated_items_with_attachments AS (
+        SELECT DISTINCT ui.id
+        FROM updated_items ui
+        JOIN attachments a ON a.item_id = ui.id
+      ),
+      updated_attachments AS (
+        SELECT COUNT(*)::int AS attachments_now_public_count
+        FROM attachments a
+        JOIN updated_items ui ON ui.id = a.item_id
+      )
+      SELECT
+        (SELECT COUNT(*)::int FROM updated_items) AS published_updated,
+        (SELECT COUNT(*)::int FROM updated_items_with_attachments) AS published_with_attachments,
+        COALESCE((SELECT attachments_now_public_count FROM updated_attachments), 0)::int
+          AS attachments_now_public_count
       `,
       [municipalityId, category, year]
     );
+    const publishStats = publishUpdate.rows[0] || {};
+    const publishedUpdated = Number(publishStats.published_updated || 0);
+    const publishedWithAttachments = Number(publishStats.published_with_attachments || 0);
+    const attachmentsNowPublicCount = Number(publishStats.attachments_now_public_count || 0);
 
     return res.json({
       ok: true,
@@ -1991,7 +2044,9 @@ app.post("/api/admin/publish", requireAdmin, async (req, res) => {
       municipality_id: municipalityId,
       category,
       year: year || null,
-      published_updated: publishUpdate.rowCount,
+      published_updated: publishedUpdated,
+      published_with_attachments: publishedWithAttachments,
+      attachments_now_public_count: attachmentsNowPublicCount,
       next: "Next: verify coverage and public feed counts.",
     });
   } catch (err) {
@@ -2403,31 +2458,139 @@ app.get("/api/feed", async (req, res) => {
 
     const itemsSql = `
       SELECT
-        id,
-        municipality AS municipality_name,
-        municipality_key AS municipality_name_key,
-        category,
-        title,
-        source_url,
-        published_date AS published_at,
-        created_at,
-        collected_at
-      FROM v_public_feed
+        v.id,
+        v.municipality AS municipality_name,
+        v.municipality_key AS municipality_name_key,
+        v.category,
+        v.title,
+        v.source_url,
+        v.published_date AS published_at,
+        v.created_at,
+        v.collected_at,
+        COALESCE(att.attachment_count, 0)::int AS attachment_count,
+        att.primary_attachment_id
+      FROM v_public_feed v
+      LEFT JOIN LATERAL (
+        SELECT
+          COUNT(*)::int AS attachment_count,
+          (ARRAY_AGG(a.id::text ORDER BY a.created_at ASC, a.id ASC))[1] AS primary_attachment_id
+        FROM attachments a
+        WHERE a.item_id = v.id
+      ) att ON TRUE
       ${whereSql}
-      ORDER BY collected_at DESC
+      ORDER BY v.collected_at DESC
       LIMIT $${limitIdx} OFFSET $${offsetIdx};
     `;
 
     const itemsResult = await pool.query(itemsSql, itemParams);
+    const items = itemsResult.rows.map((row) => {
+      const primaryAttachmentId = String(row.primary_attachment_id || "").trim() || null;
+      return {
+        ...row,
+        attachment_count: Number(row.attachment_count || 0),
+        primary_attachment_id: primaryAttachmentId,
+        primary_attachment_public_url: primaryAttachmentId
+          ? buildPublicFilePath(primaryAttachmentId)
+          : null,
+      };
+    });
     res.json({
       ok: true,
       page,
       limit,
       total,
-      items: itemsResult.rows,
+      items,
     });
   } catch (err) {
     res.status(500).json({
+      ok: false,
+      error: "server_error",
+      message: safePublicErrorMessage(err, "Server operation failed"),
+    });
+  }
+});
+
+app.get("/api/items/:id", async (req, res) => {
+  try {
+    const itemId = String(req.params.id || "").trim();
+    if (!isUuid(itemId)) {
+      return res.status(404).json({
+        ok: false,
+        error: "not_found",
+        message: "Item not found.",
+      });
+    }
+
+    const itemResult = await pool.query(
+      `
+      SELECT
+        i.id,
+        i.municipality_id,
+        m.name_sq AS municipality_name,
+        m.name_key AS municipality_name_key,
+        i.category,
+        i.title,
+        i.summary,
+        i.source_url,
+        i.published_date AS published_at,
+        i.collected_at,
+        i.created_at,
+        i.updated_at
+      FROM items i
+      JOIN municipalities m ON m.id = i.municipality_id
+      WHERE i.id = $1
+        AND i.status = 'published'
+      LIMIT 1
+      `,
+      [itemId]
+    );
+
+    if (!itemResult.rowCount) {
+      return res.status(404).json({
+        ok: false,
+        error: "not_found",
+        message: "Item not found.",
+      });
+    }
+
+    const attachmentResult = await pool.query(
+      `
+      SELECT
+        a.id,
+        a.file_name,
+        a.mime_type,
+        a.size_bytes,
+        a.created_at
+      FROM attachments a
+      WHERE a.item_id = $1
+      ORDER BY a.created_at ASC, a.id ASC
+      `,
+      [itemId]
+    );
+
+    const attachments = attachmentResult.rows.map((row) => ({
+      id: row.id,
+      file_name: row.file_name,
+      mime_type: row.mime_type,
+      size_bytes: Number(row.size_bytes || 0),
+      created_at: row.created_at,
+      public_file_url: buildPublicFilePath(row.id),
+    }));
+    const primaryAttachmentId =
+      attachments.length > 0 ? String(attachments[0].id || "").trim() || null : null;
+
+    return res.json({
+      ok: true,
+      item: itemResult.rows[0],
+      attachments,
+      attachment_count: attachments.length,
+      primary_attachment_id: primaryAttachmentId,
+      primary_attachment_public_url: primaryAttachmentId
+        ? buildPublicFilePath(primaryAttachmentId)
+        : null,
+    });
+  } catch (err) {
+    return res.status(500).json({
       ok: false,
       error: "server_error",
       message: safePublicErrorMessage(err, "Server operation failed"),

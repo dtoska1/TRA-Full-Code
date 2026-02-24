@@ -88,6 +88,10 @@ async function fetchCoverageSummary(pool, generatedAtUtc = new Date().toISOStrin
       r.last_checked_utc,
       COALESCE(i.published_count, 0)::int AS published_count,
       COALESCE(i.draft_count, 0)::int AS draft_count,
+      COALESCE(att_counts.published_attachment_count, 0)::int AS published_attachment_count,
+      COALESCE(att_counts.draft_attachment_count, 0)::int AS draft_attachment_count,
+      att_latest.latest_attachment_id,
+      att_latest.latest_attachment_item_status,
       i.latest_published_date,
       i.latest_collected_at
     FROM registry r
@@ -102,6 +106,30 @@ async function fetchCoverageSummary(pool, generatedAtUtc = new Date().toISOStrin
       WHERE it.municipality_id = r.municipality_id
         AND it.category = c.category
     ) i ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT
+        COUNT(*) FILTER (WHERE it2.status = 'published') AS published_attachment_count,
+        COUNT(*) FILTER (WHERE it2.status = 'draft') AS draft_attachment_count
+      FROM attachments a2
+      JOIN items it2 ON it2.id = a2.item_id
+      WHERE it2.municipality_id = r.municipality_id
+        AND it2.category = c.category
+    ) att_counts ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT
+        a3.id AS latest_attachment_id,
+        CASE
+          WHEN it3.status = 'draft' THEN 'draft'
+          WHEN it3.status = 'published' THEN 'published'
+          ELSE NULL
+        END AS latest_attachment_item_status
+      FROM attachments a3
+      JOIN items it3 ON it3.id = a3.item_id
+      WHERE it3.municipality_id = r.municipality_id
+        AND it3.category = c.category
+      ORDER BY a3.created_at DESC, a3.id DESC
+      LIMIT 1
+    ) att_latest ON TRUE
     ORDER BY r.name_key ASC, c.category ASC;
   `;
 
