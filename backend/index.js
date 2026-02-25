@@ -213,6 +213,7 @@ const KONSULTIME_FALLBACK_KEYWORDS = [
 const KONSULTIME_FALLBACK_MAX_LINKS = 6;
 const KONSULTIME_NO_YEAR_KEEP_RE =
   /\b(konsultim[a-z]*|konsultime[a-z]*|degjes[a-z]*|njoftim[a-z]*|proces\s*verbal[a-z]*|takim[a-z]*|projekt[a-z]*|draft[a-z]*)\b/;
+const SEARCH_INDEX_UID = String(process.env.MEILI_PUBLIC_INDEX_UID || "public_items_v1").trim();
 
 try {
   fs.mkdirSync(UPLOADS_DIR, { recursive: true });
@@ -430,6 +431,13 @@ function parseOptionalInteger(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+function parseSort(value, fallback = "newest") {
+  if (value === undefined || value === null || value === "") return fallback;
+  const normalized = String(value).trim().toLowerCase();
+  if (normalized === "newest" || normalized === "oldest") return normalized;
+  return null;
+}
+
 function asEnabledFlag(value) {
   if (typeof value === "boolean") return value;
   const s = String(value || "").trim().toLowerCase();
@@ -579,6 +587,86 @@ function sanitizeDownloadName(fileName, attachmentId) {
   if (cleaned && cleaned.toLowerCase().endsWith(".pdf")) return cleaned;
   if (cleaned) return `${cleaned}.pdf`;
   return `${attachmentId}.pdf`;
+}
+
+function escapeMeiliFilterValue(value) {
+  return String(value || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+function buildMeiliAuthHeaders() {
+  const headers = {
+    Accept: "application/json",
+    "Content-Type": "application/json",
+  };
+  const apiKey = String(process.env.MEILI_MASTER_KEY || "").trim();
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  return headers;
+}
+
+function buildMeiliFilter({ municipality, category, year }) {
+  const parts = [];
+  if (municipality) {
+    parts.push(`municipality_name_key = "${escapeMeiliFilterValue(municipality)}"`);
+  }
+  if (category) {
+    parts.push(`category = "${escapeMeiliFilterValue(category)}"`);
+  }
+  if (year !== null && year !== undefined) {
+    parts.push(`year = ${Number(year)}`);
+  }
+  if (!parts.length) return undefined;
+  return parts.join(" AND ");
+}
+
+function getMeiliSortClause(sort) {
+  if (sort === "oldest") return ["published_ts:asc", "collected_ts:asc"];
+  return ["published_ts:desc", "collected_ts:desc"];
+}
+
+async function meiliRequest(method, routePath, body = undefined) {
+  const host = String(process.env.MEILI_HOST || "").trim().replace(/\/+$/, "");
+  if (!host) {
+    const err = new Error("Search backend unavailable.");
+    err.statusCode = 503;
+    throw err;
+  }
+
+  const url = `${host}${routePath.startsWith("/") ? routePath : `/${routePath}`}`;
+  let response;
+  try {
+    response = await withTimeout(fetch(url, {
+      method,
+      headers: buildMeiliAuthHeaders(),
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }), 5000, "Meilisearch request timed out");
+  } catch (error) {
+    const err = new Error("Search backend unavailable.");
+    err.statusCode = 503;
+    err.cause = error;
+    throw err;
+  }
+
+  const responseText = await response.text();
+  let responseJson = null;
+  if (responseText) {
+    try {
+      responseJson = JSON.parse(responseText);
+    } catch {
+      responseJson = null;
+    }
+  }
+
+  if (!response.ok) {
+    const isServiceUnavailable = response.status === 401 || response.status === 403 || response.status === 404 || response.status >= 500;
+    const err = new Error(
+      isServiceUnavailable ? "Search backend unavailable." : "Search request failed."
+    );
+    err.statusCode = isServiceUnavailable ? 503 : 500;
+    err.meiliStatus = response.status;
+    throw err;
+  }
+
+  return responseJson;
 }
 
 async function resolveAttachmentForServing(attachmentId, { publicOnlyPublished }) {
@@ -1767,6 +1855,7 @@ app.get("/", (req, res) => {
       "/api/admin/publish",
       "/api/admin/source/checked",
       "/api/feed",
+      "/api/search",
       "/api/items/:id",
       "/api/public/files/:id",
       "/api/scrape/tirana/vendime",
@@ -2402,6 +2491,21 @@ app.get("/api/feed", async (req, res) => {
       }
     }
 
+    const yearProvided =
+      req.query.year !== undefined &&
+      req.query.year !== null &&
+      String(req.query.year).trim() !== "";
+    const year = parseYear(req.query.year, null);
+    if (yearProvided && year === null) {
+      return badRequest(res, "Invalid year. year must be an integer between 2000 and 2100.");
+    }
+
+    const sort = parseSort(req.query.sort, "newest");
+    if (!sort) {
+      return badRequest(res, "Invalid sort. Allowed values: newest, oldest.");
+    }
+    const orderDirection = sort === "oldest" ? "ASC" : "DESC";
+
     const offset = (page - 1) * limit;
 
     const params = [];
@@ -2441,6 +2545,13 @@ app.get("/api/feed", async (req, res) => {
       where.push(`category = $${params.length}`);
     }
 
+    if (yearProvided) {
+      params.push(year);
+      where.push(
+        `published_date IS NOT NULL AND EXTRACT(YEAR FROM published_date)::int = $${params.length}`
+      );
+    }
+
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
     const countSql = `
       SELECT COUNT(*)::int AS total
@@ -2478,7 +2589,10 @@ app.get("/api/feed", async (req, res) => {
         WHERE a.item_id = v.id
       ) att ON TRUE
       ${whereSql}
-      ORDER BY v.collected_at DESC
+      ORDER BY
+        COALESCE(v.published_date::timestamp, v.collected_at) ${orderDirection},
+        v.collected_at ${orderDirection},
+        v.id ${orderDirection}
       LIMIT $${limitIdx} OFFSET $${offsetIdx};
     `;
 
@@ -2506,6 +2620,152 @@ app.get("/api/feed", async (req, res) => {
       ok: false,
       error: "server_error",
       message: safePublicErrorMessage(err, "Server operation failed"),
+    });
+  }
+});
+
+app.get("/api/search", async (req, res) => {
+  try {
+    const qRaw = req.query.q;
+    const q = String(qRaw || "").trim();
+    if (!q) {
+      return badRequest(res, "Invalid q. q is required and must not be empty.");
+    }
+    if (q.length > 120) {
+      return badRequest(res, "Invalid q. q must be at most 120 characters.");
+    }
+
+    const page = parsePositiveInt(req.query.page, 1);
+    if (page === null) {
+      return badRequest(res, "Invalid page. page must be an integer >= 1.");
+    }
+
+    const limit = parsePositiveInt(req.query.limit, 20);
+    if (limit === null || limit > 50) {
+      return badRequest(res, "Invalid limit. limit must be an integer between 1 and 50.");
+    }
+
+    const municipalityRaw = req.query.municipality;
+    let municipality = null;
+    if (municipalityRaw !== undefined) {
+      municipality = String(municipalityRaw).trim().toLowerCase();
+      if (!municipality || !/^[a-z0-9-]{1,64}$/.test(municipality)) {
+        return badRequest(
+          res,
+          "Invalid municipality. Use lowercase slug format (a-z, 0-9, hyphen), max 64 chars."
+        );
+      }
+    }
+
+    const categoryRaw = req.query.category;
+    let category = null;
+    if (categoryRaw !== undefined) {
+      category = resolveSupportedCategory(categoryRaw, null);
+      if (!category) {
+        return badRequest(
+          res,
+          `Invalid category. Allowed values: ${SUPPORTED_CATEGORIES.join(", ")}.`
+        );
+      }
+    }
+
+    const yearProvided =
+      req.query.year !== undefined &&
+      req.query.year !== null &&
+      String(req.query.year).trim() !== "";
+    const year = parseYear(req.query.year, null);
+    if (yearProvided && year === null) {
+      return badRequest(res, "Invalid year. year must be an integer between 2000 and 2100.");
+    }
+
+    const sort = parseSort(req.query.sort, "newest");
+    if (!sort) {
+      return badRequest(res, "Invalid sort. Allowed values: newest, oldest.");
+    }
+
+    const offset = (page - 1) * limit;
+    const searchPayload = {
+      q,
+      limit,
+      offset,
+      filter: buildMeiliFilter({
+        municipality,
+        category,
+        year: yearProvided ? year : null,
+      }),
+      sort: getMeiliSortClause(sort),
+      attributesToRetrieve: [
+        "id",
+        "title",
+        "summary",
+        "municipality_name",
+        "municipality_name_key",
+        "category",
+        "published_at",
+        "collected_at",
+        "source_url",
+        "source_host",
+        "attachment_count",
+        "primary_attachment_id",
+        "primary_attachment_public_url",
+      ],
+    };
+
+    const meiliResponse = await meiliRequest(
+      "POST",
+      `/indexes/${encodeURIComponent(SEARCH_INDEX_UID)}/search`,
+      searchPayload
+    );
+    const hits = Array.isArray(meiliResponse?.hits) ? meiliResponse.hits : [];
+    const total = Number(
+      meiliResponse?.estimatedTotalHits ??
+        meiliResponse?.totalHits ??
+        meiliResponse?.total ??
+        hits.length
+    );
+
+    const items = hits.map((hit) => {
+      const primaryAttachmentId = String(hit?.primary_attachment_id || "").trim() || null;
+      const publicFilePath = primaryAttachmentId ? buildPublicFilePath(primaryAttachmentId) : null;
+      return {
+        id: String(hit?.id || ""),
+        title: String(hit?.title || ""),
+        summary: hit?.summary || null,
+        municipality_name: hit?.municipality_name || null,
+        municipality_name_key: hit?.municipality_name_key || null,
+        category: hit?.category || null,
+        published_at: hit?.published_at || null,
+        collected_at: hit?.collected_at || null,
+        source_url: hit?.source_url || null,
+        source_host: hit?.source_host || null,
+        attachment_count: Number(hit?.attachment_count || 0),
+        primary_attachment_id: primaryAttachmentId,
+        primary_attachment_public_url:
+          String(hit?.primary_attachment_public_url || "").trim() || publicFilePath,
+      };
+    });
+
+    return res.json({
+      ok: true,
+      q,
+      page,
+      limit,
+      total: Number.isFinite(total) ? total : 0,
+      items,
+    });
+  } catch (err) {
+    const statusCode = Number(err?.statusCode || 500);
+    if (statusCode === 503) {
+      return res.status(503).json({
+        ok: false,
+        error: "search_unavailable",
+        message: "Search is temporarily unavailable.",
+      });
+    }
+    return res.status(500).json({
+      ok: false,
+      error: "server_error",
+      message: "Search request failed.",
     });
   }
 });

@@ -1,4 +1,6 @@
+import type { Metadata } from "next";
 import Link from "next/link";
+import { buildPageTitle } from "../../metadata";
 
 const CATEGORY_TABS = [
   { value: "Vendime", label: "Vendime" },
@@ -6,11 +8,19 @@ const CATEGORY_TABS = [
   { value: "Konsultime publike", label: "Konsultime" },
 ] as const;
 
+type QueryMap = Record<string, string | string[] | undefined>;
+
 type FeedItem = {
   id: string;
   title: string;
   source_url: string | null;
+  category: string;
+  municipality_name: string;
   published_at: string | null;
+  collected_at: string | null;
+  attachment_count: number;
+  primary_attachment_id: string | null;
+  primary_attachment_public_url: string | null;
 };
 
 type FeedResponse = {
@@ -19,11 +29,32 @@ type FeedResponse = {
   items: FeedItem[];
 };
 
+function firstValue(params: QueryMap, key: string): string {
+  const value = params[key];
+  if (Array.isArray(value)) return String(value[0] || "");
+  return String(value || "");
+}
+
 function normalizeCategory(input: string | null | undefined): (typeof CATEGORY_TABS)[number]["value"] {
   const raw = String(input || "").trim().toLowerCase();
   if (raw === "prokurime") return "Prokurime";
   if (raw === "konsultime publike" || raw === "konsultime-publike") return "Konsultime publike";
   return "Vendime";
+}
+
+function normalizeSort(input: string | null | undefined): "newest" | "oldest" {
+  const raw = String(input || "").trim().toLowerCase();
+  if (raw === "oldest") return "oldest";
+  return "newest";
+}
+
+function normalizeYear(input: string | null | undefined): string {
+  const raw = String(input || "").trim();
+  if (!raw) return "";
+  if (!/^\d{4}$/.test(raw)) return "";
+  const year = Number.parseInt(raw, 10);
+  if (year < 2000 || year > 2100) return "";
+  return String(year);
 }
 
 function formatDate(value: string | null): string {
@@ -33,15 +64,44 @@ function formatDate(value: string | null): string {
   return date.toISOString().slice(0, 10);
 }
 
-async function getMunicipalityFeed(municipality: string, category: string): Promise<{
+function sourceHostFromUrl(urlValue: string | null): string {
+  const raw = String(urlValue || "").trim();
+  if (!raw) return "source unavailable";
+  try {
+    return new URL(raw).hostname.toLowerCase().replace(/^www\./, "");
+  } catch {
+    return "source unavailable";
+  }
+}
+
+function toAbsoluteApiUrl(relativePath: string | null): string | null {
+  if (!relativePath) return null;
+  const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:5050";
+  try {
+    return new URL(relativePath, `${apiBaseUrl.replace(/\/+$/, "")}/`).toString();
+  } catch {
+    return null;
+  }
+}
+
+async function getMunicipalityFeed(options: {
+  municipality: string;
+  category: string;
+  year: string;
+  sort: "newest" | "oldest";
+}): Promise<{
   data: FeedResponse | null;
   error: string | null;
 }> {
   const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:5050";
   const url = new URL(`${apiBaseUrl.replace(/\/+$/, "")}/api/feed`);
-  url.searchParams.set("municipality", municipality);
-  url.searchParams.set("category", category);
-  url.searchParams.set("limit", "20");
+  url.searchParams.set("municipality", options.municipality);
+  url.searchParams.set("category", options.category);
+  url.searchParams.set("limit", "30");
+  url.searchParams.set("sort", options.sort);
+  if (options.year) {
+    url.searchParams.set("year", options.year);
+  }
 
   try {
     const response = await fetch(url.toString(), { cache: "no-store" });
@@ -58,29 +118,80 @@ async function getMunicipalityFeed(municipality: string, category: string): Prom
   }
 }
 
+export async function generateMetadata({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ municipality: string }>;
+  searchParams: Promise<QueryMap>;
+}): Promise<Metadata> {
+  const routeParams = await params;
+  const query = await searchParams;
+  const municipality = String(routeParams.municipality || "").trim().toLowerCase();
+  const category = normalizeCategory(firstValue(query, "category"));
+  const year = normalizeYear(firstValue(query, "year"));
+
+  const titleCore = year
+    ? `${municipality} ${category} ${year}`
+    : `${municipality} ${category}`;
+  const canonicalQuery = new URLSearchParams();
+  canonicalQuery.set("category", category);
+  if (year) canonicalQuery.set("year", year);
+  const canonical = `/municipality/${encodeURIComponent(municipality)}?${canonicalQuery.toString()}`;
+
+  return {
+    title: buildPageTitle(titleCore),
+    description: `Published ${category} documents for ${municipality}${year ? ` in ${year}` : ""}.`,
+    alternates: {
+      canonical,
+    },
+    openGraph: {
+      title: buildPageTitle(titleCore),
+      description: `Published ${category} documents for ${municipality}${year ? ` in ${year}` : ""}.`,
+      url: canonical,
+    },
+  };
+}
+
 export default async function MunicipalityPage({
   params,
   searchParams,
 }: {
-  params: { municipality: string };
-  searchParams?: { category?: string };
+  params: Promise<{ municipality: string }>;
+  searchParams: Promise<QueryMap>;
 }) {
-  const municipality = String(params.municipality || "").trim().toLowerCase();
-  const selectedCategory = normalizeCategory(searchParams?.category);
-  const { data, error } = await getMunicipalityFeed(municipality, selectedCategory);
+  const routeParams = await params;
+  const query = await searchParams;
+
+  const municipality = String(routeParams.municipality || "").trim().toLowerCase();
+  const selectedCategory = normalizeCategory(firstValue(query, "category"));
+  const selectedYear = normalizeYear(firstValue(query, "year"));
+  const selectedSort = normalizeSort(firstValue(query, "sort"));
+  const { data, error } = await getMunicipalityFeed({
+    municipality,
+    category: selectedCategory,
+    year: selectedYear,
+    sort: selectedSort,
+  });
 
   return (
     <main className="mx-auto w-full max-w-5xl p-4 pb-10 sm:p-6">
       <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Municipality Feed</p>
+        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+          Municipality Feed
+        </p>
         <h1 className="mt-2 text-2xl font-semibold text-slate-900">{municipality}</h1>
         <div className="mt-4 flex flex-wrap gap-2">
           {CATEGORY_TABS.map((tab) => {
             const isActive = tab.value === selectedCategory;
+            const tabQuery = new URLSearchParams();
+            tabQuery.set("category", tab.value);
+            if (selectedYear) tabQuery.set("year", selectedYear);
+            tabQuery.set("sort", selectedSort);
             return (
               <Link
                 key={tab.value}
-                href={`/municipality/${encodeURIComponent(municipality)}?category=${encodeURIComponent(tab.value)}`}
+                href={`/municipality/${encodeURIComponent(municipality)}?${tabQuery.toString()}`}
                 className={
                   isActive
                     ? "rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white"
@@ -92,6 +203,48 @@ export default async function MunicipalityPage({
             );
           })}
         </div>
+
+        <form method="GET" className="mt-4 flex flex-wrap items-end gap-2">
+          <input type="hidden" name="category" value={selectedCategory} />
+          <label className="flex flex-col text-xs font-medium text-slate-600">
+            Year
+            <input
+              type="number"
+              name="year"
+              min={2000}
+              max={2100}
+              defaultValue={selectedYear}
+              placeholder="YYYY"
+              className="mt-1 w-32 rounded-lg border border-slate-300 px-2 py-1.5 text-sm text-slate-800"
+            />
+          </label>
+          <label className="flex flex-col text-xs font-medium text-slate-600">
+            Sort
+            <select
+              name="sort"
+              defaultValue={selectedSort}
+              className="mt-1 rounded-lg border border-slate-300 px-2 py-1.5 text-sm text-slate-800"
+            >
+              <option value="newest">Newest first</option>
+              <option value="oldest">Oldest first</option>
+            </select>
+          </label>
+          <button
+            type="submit"
+            className="rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white"
+          >
+            Apply
+          </button>
+          <Link
+            href={`/municipality/${encodeURIComponent(municipality)}?category=${encodeURIComponent(
+              selectedCategory
+            )}&sort=newest`}
+            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700"
+          >
+            Clear year
+          </Link>
+        </form>
+
         {error ? (
           <p className="mt-4 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
             {error}
@@ -102,26 +255,45 @@ export default async function MunicipalityPage({
       <section className="mt-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <p className="text-sm text-slate-600">Total: {data?.total || 0}</p>
         <ul className="mt-4 space-y-3">
-          {(data?.items || []).map((item) => (
-            <li key={item.id} className="rounded-xl border border-slate-200 p-4">
-              <p className="text-xs text-slate-500">{formatDate(item.published_at)}</p>
-              {item.source_url ? (
-                <a
-                  href={item.source_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="mt-1 block text-sm font-medium text-blue-700 underline"
-                >
-                  {item.title}
-                </a>
-              ) : (
-                <p className="mt-1 text-sm font-medium text-slate-900">{item.title}</p>
-              )}
-            </li>
-          ))}
+          {(data?.items || []).map((item) => {
+            const publicFileUrl = toAbsoluteApiUrl(item.primary_attachment_public_url);
+            return (
+              <li key={item.id} className="rounded-xl border border-slate-200 p-4">
+                <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
+                  <span>{formatDate(item.published_at || item.collected_at)}</span>
+                  <span className="rounded-full bg-slate-100 px-2 py-0.5">{item.category}</span>
+                  <span>{item.municipality_name}</span>
+                  <span>{sourceHostFromUrl(item.source_url)}</span>
+                </div>
+                <p className="mt-2 text-sm font-semibold text-slate-900">{item.title}</p>
+                <div className="mt-3 flex flex-wrap gap-3 text-sm">
+                  {item.source_url ? (
+                    <a
+                      href={item.source_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="font-medium text-blue-700 underline"
+                    >
+                      Source link
+                    </a>
+                  ) : null}
+                  {publicFileUrl ? (
+                    <a
+                      href={publicFileUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="font-medium text-emerald-700 underline"
+                    >
+                      Public PDF
+                    </a>
+                  ) : null}
+                </div>
+              </li>
+            );
+          })}
         </ul>
         {(data?.items || []).length === 0 ? (
-          <p className="mt-4 text-sm text-slate-500">No published items for this category yet.</p>
+          <p className="mt-4 text-sm text-slate-500">No published items for this filter set.</p>
         ) : null}
       </section>
     </main>

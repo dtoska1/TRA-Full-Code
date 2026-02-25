@@ -208,6 +208,37 @@ curl.exe "http://localhost:5050/api/feed?municipality=tirane&category=Prokurime&
 curl.exe "http://localhost:5050/api/feed?municipality=tirane&category=Konsultime%20publike&limit=5"
 ```
 
+Feed optional year + sort filters (additive):
+
+```powershell
+curl.exe "http://localhost:5050/api/feed?municipality=tirane&category=Vendime&year=2025&sort=newest&limit=5"
+curl.exe "http://localhost:5050/api/feed?municipality=tirane&category=Vendime&year=2025&sort=oldest&limit=5"
+```
+
+Rules:
+- `year` is optional. If provided, only rows with non-null `published_date` in that exact year are returned.
+- `sort` is optional and supports `newest|oldest` (default `newest`).
+
+Public search endpoint (`/api/search`) for published items:
+
+```powershell
+curl.exe "http://localhost:5050/api/search?q=vendim&limit=10"
+curl.exe "http://localhost:5050/api/search?q=prokurim&municipality=tirane&category=Prokurime&year=2025&sort=newest&limit=10"
+```
+
+Search query params:
+- `q` required, max 120 chars.
+- `page` optional (default `1`).
+- `limit` optional (default `20`, max `50`).
+- `municipality`, `category`, `year`, `sort` optional filters.
+
+Search response item fields include:
+- `id`, `title`, `summary`
+- `municipality_name`, `municipality_name_key`, `category`
+- `published_at`, `collected_at`
+- `source_url`, `source_host`
+- `attachment_count`, `primary_attachment_id`, `primary_attachment_public_url`
+
 ## Sanity checks (quick)
 
 From repo root (PowerShell):
@@ -310,6 +341,19 @@ File visibility behavior:
 - `GET /api/admin/files/:id` requires admin token and allows draft/published file retrieval.
 - Public endpoint returns strict `404` for non-existent, invalid id, draft, or missing file cases.
 
+Search indexing (script-first):
+
+```bash
+node backend/scripts/reindex_public_search.js
+node backend/scripts/reindex_public_search.js --dry_run=true
+node backend/scripts/reindex_public_search.js --reset=true --batch=500
+```
+
+Notes:
+- Reindex script reads only `items.status='published'`.
+- No admin reindex endpoint is used in v1 (script-first operation).
+- Public file URLs in search/feed remain inaccessible until item status is `published`.
+
 Public item detail endpoint:
 
 ```powershell
@@ -331,6 +375,11 @@ Admin coverage attachment linkage fields (additive):
 `POST /api/admin/publish` response now includes additive counters:
 - `published_with_attachments`
 - `attachments_now_public_count`
+
+Frontend UX (PR6):
+- `/` includes global search UI wired to `/api/search`.
+- `/municipality/[municipality]` supports category tabs + `year` + `sort` filters.
+- Municipality and filter context is reflected in page metadata (SEO).
 
 ### 9) Run one end-to-end scraper first (Tirane Vendime)
 
