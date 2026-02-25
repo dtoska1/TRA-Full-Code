@@ -3,6 +3,8 @@ const BASE_URL = String(process.env.SMOKE_BASE_URL || "http://127.0.0.1:5050").r
   /\/+$/,
   ""
 );
+const fs = require("fs/promises");
+const path = require("path");
 const ADMIN_TOKEN = String(process.env.ADMIN_TOKEN || "").trim();
 
 function assert(condition, message) {
@@ -171,19 +173,22 @@ async function run() {
     `POST /api/admin/items/manual invalid upload expected 400, got ${invalidUpload.status}`
   );
 
-  const validPdfBytes = Buffer.from(
-    "%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n",
-    "ascii"
-  );
+  const unique = Date.now();
+  const title = `CI Smoke Manual Upload Test ${unique}`;
+  const tempDir = path.join(__dirname, "..", "tmp");
+  const tempPdfPath = path.join(tempDir, "ci_smoke.pdf");
+  await fs.mkdir(tempDir, { recursive: true });
+  await fs.writeFile(tempPdfPath, "%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n", "ascii");
+  const validPdfBytes = await fs.readFile(tempPdfPath);
   const validUploadForm = new FormData();
   validUploadForm.set("municipality", "tirane");
   validUploadForm.set("category", "Vendime");
-  validUploadForm.set("title", "Smoke valid upload");
+  validUploadForm.set("title", title);
   validUploadForm.set("published_date", "2025-01-15");
   validUploadForm.set(
     "file",
     new Blob([validPdfBytes], { type: "application/pdf" }),
-    "valid.pdf"
+    "ci_smoke.pdf"
   );
   const validUpload = await requestJson("/api/admin/items/manual", {
     method: "POST",
@@ -474,3 +479,4 @@ run().catch((err) => {
   console.error("Smoke checks failed:", err.message);
   process.exit(1);
 });
+
