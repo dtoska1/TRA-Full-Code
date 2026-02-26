@@ -34,6 +34,10 @@ backend/tmp/*
 backend/uploads/
 backend/uploads/*
 
+# local dev-only (don’t commit)
+backend/scripts/autopilot.ps1
+frontend/app/components/municipality-feed-cta.tsx
+
 # local junk
 /tatus
 *.tmp
