@@ -93,9 +93,6 @@ export default async function StatusPage() {
 
       <section className="mt-5 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <h2 className="text-lg font-semibold text-slate-900">Blocked Municipalities</h2>
-        <p className="mt-1 text-sm text-slate-600">
-          Expected in current environment: 6 blocked municipalities.
-        </p>
 
         <div className="mt-4 overflow-x-auto">
           <table className="w-full min-w-[560px] text-left text-sm">

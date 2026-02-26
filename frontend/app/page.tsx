@@ -1,4 +1,5 @@
 import Link from "next/link";
+import MunicipalityFeedCta from "./components/municipality-feed-cta";
 
 const SEARCH_CATEGORIES = ["Vendime", "Prokurime", "Konsultime publike"] as const;
 const SORT_OPTIONS = ["newest", "oldest"] as const;
@@ -28,6 +29,24 @@ type SearchResponse = {
   limit: number;
   total: number;
   items: SearchItem[];
+};
+
+type MunicipalityApiItem = {
+  id: string;
+  name_sq: string;
+  name_key: string;
+  county: string | null;
+};
+
+type MunicipalityOption = {
+  name_key: string;
+  name_sq: string;
+};
+
+type MunicipalitiesResponse = {
+  ok: boolean;
+  total: number;
+  items: MunicipalityApiItem[];
 };
 
 function firstValue(params: QueryMap, key: string): string {
@@ -109,6 +128,40 @@ async function searchPublishedItems(filters: {
   }
 }
 
+async function getMunicipalityOptions(): Promise<{
+  items: MunicipalityOption[];
+  error: string | null;
+}> {
+  const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:5050";
+  const url = `${apiBaseUrl.replace(/\/+$/, "")}/api/municipalities`;
+
+  try {
+    const response = await fetch(url, { cache: "no-store" });
+    if (!response.ok) {
+      return { items: [], error: `Municipality list returned HTTP ${response.status}` };
+    }
+
+    const json = (await response.json()) as MunicipalitiesResponse;
+    if (!json?.ok || !Array.isArray(json.items)) {
+      return { items: [], error: "Municipality list returned invalid payload" };
+    }
+
+    const items = json.items
+      .map((item) => ({
+        name_key: String(item.name_key || "").trim().toLowerCase(),
+        name_sq: String(item.name_sq || "").trim(),
+      }))
+      .filter((item) => item.name_key && item.name_sq);
+
+    return { items, error: null };
+  } catch (error) {
+    return {
+      items: [],
+      error: error instanceof Error ? error.message : "Municipality list request failed",
+    };
+  }
+}
+
 export default async function HomePage({
   searchParams,
 }: {
@@ -120,6 +173,8 @@ export default async function HomePage({
   const municipality = firstValue(params, "municipality").trim().toLowerCase();
   const year = normalizeYear(firstValue(params, "year"));
   const sort = normalizeSort(firstValue(params, "sort"));
+  const selectedFeedCategory = (category ||
+    "Vendime") as "Vendime" | "Prokurime" | "Konsultime publike";
   const { data, error } = await searchPublishedItems({
     q,
     category,
@@ -127,6 +182,7 @@ export default async function HomePage({
     year,
     sort,
   });
+  const { items: municipalities } = await getMunicipalityOptions();
 
   return (
     <main className="mx-auto flex w-full max-w-5xl flex-col gap-4 p-4 pb-10 sm:p-6">
@@ -203,18 +259,42 @@ export default async function HomePage({
           >
             Public Status
           </Link>
-          <Link
-            href="/municipality/tirane?category=Vendime"
-            className="inline-flex items-center justify-center rounded-xl border border-slate-300 bg-slate-50 px-5 py-3 text-base font-medium text-slate-700"
-          >
-            Municipality Feed
-          </Link>
+          {municipalities.length > 0 ? (
+            <MunicipalityFeedCta
+              municipalities={municipalities}
+              defaultMunicipality={municipality}
+              selectedCategory={selectedFeedCategory}
+            />
+          ) : (
+            <Link
+              href="/municipality/tirane?category=Vendime"
+              className="inline-flex items-center justify-center rounded-xl border border-slate-300 bg-slate-50 px-5 py-3 text-base font-medium text-slate-700"
+            >
+              Municipality Feed
+            </Link>
+          )}
           <Link
             href="/coverage"
             className="inline-flex items-center justify-center rounded-xl border border-slate-300 bg-slate-50 px-5 py-3 text-base font-medium text-slate-700"
           >
             Admin Coverage
           </Link>
+        </div>
+      </section>
+
+      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <h2 className="text-xl font-semibold text-slate-900">About / Outcomes</h2>
+        <div className="mt-3 space-y-3 text-sm text-slate-700">
+          <p>
+            <strong>Improved access to public information.</strong> Citizens, CSOs, and journalists
+            can use one platform to track municipal decisions, procurement data, and consultations
+            across Albania.
+          </p>
+          <p>
+            <strong>Digital democracy impact.</strong> Transparency Radar Albania turns fragmented
+            public information into accessible, actionable data that supports participation in local
+            governance and accountability.
+          </p>
         </div>
       </section>
 

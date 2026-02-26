@@ -305,7 +305,8 @@ export default function CoveragePage() {
           Row actions use optional year. Leave year empty to run/publish without year filter.
         </p>
         <p className="mb-3 text-xs text-slate-600">
-          Prokurime uses a nationwide API; no per-municipality URL is required.
+          Auto-publish controls whether new ingests publish automatically. Legacy 'Source reviewed'
+          does not auto-publish.
         </p>
         <div className="overflow-x-auto">
           <table className="w-full min-w-[1320px] text-left text-xs">
@@ -317,6 +318,8 @@ export default function CoveragePage() {
                 <th className="py-2 pr-3 font-semibold">registry_url</th>
                 <th className="py-2 pr-3 font-semibold">Auto-publish (per category)</th>
                 <th className="py-2 pr-3 font-semibold">Source reviewed (legacy)</th>
+                <th className="py-2 pr-3 font-semibold">last_error_type</th>
+                <th className="py-2 pr-3 font-semibold">cooldown_until_utc</th>
                 <th className="py-2 pr-3 font-semibold">last_checked_utc</th>
                 <th className="py-2 pr-3 font-semibold">published_count</th>
                 <th className="py-2 pr-3 font-semibold">draft_count</th>
@@ -351,7 +354,9 @@ export default function CoveragePage() {
                         "-"
                       )}
                     </td>
-                    <td className="py-2 pr-3 text-slate-700">{checkedFlag ? "ENABLED" : "DISABLED"}</td>
+                    <td className="py-2 pr-3 text-slate-700">
+                      {item.category_checked ? "ENABLED" : "DISABLED"}
+                    </td>
                     <td className="py-2 pr-3 text-slate-700">{item.verification_status || "-"}</td>
                     <td className="py-2 pr-3 text-slate-700">{formatValue(item.last_checked_utc)}</td>
                     <td className="py-2 pr-3 text-slate-700">{item.published_count}</td>

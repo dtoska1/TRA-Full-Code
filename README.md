@@ -3,6 +3,12 @@
 
 Full-stack transparency platform for Albania: scrapers + API + database + public site to collect and publish municipal documents across all **61 municipalities**.
 
+## About / Outcomes
+
+- **Improved access to public information:** Citizens, CSOs, and journalists get a centralized, user-friendly platform aggregating municipal decisions, procurement data, and consultations, reducing fragmentation and increasing transparency.
+- **Digital democracy impact:** The platform transforms fragmented public information into accessible, actionable data; strengthens civic participation by enabling monitoring of municipal decisions, engagement in consultations, and accountability advocacy; and enhances transparency through aggregation and plain-language summaries understandable to diverse audiences.
+- Internal reference video: `https://www.youtube.com/watch?v=sV1i2h5rkPA`
+
 ## Repo layout
 
 - `backend/` – Node/Express API + scrapers
