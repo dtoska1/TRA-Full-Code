@@ -527,7 +527,9 @@ How it works:
 - If HTTP `429` is returned, retries the same offset with exponential backoff.
 - Timeout-like failures (`HTTP 504`, timeout messages, or `ETIMEDOUT`/`ECONNRESET`/`EAI_AGAIN`) retry the same offset up to 3 times with fixed backoff: `5s`, `15s`, `45s`.
 - If timeout retries are exhausted, the runner records timeout telemetry, advances `next_offset` by `+1` (skip one municipality), persists progress, and continues.
+- Cloudflare/bot-block failures (`HTTP 403` / `HTTP_403`) are treated as soft-skips: runner records blocked telemetry, advances `next_offset` by `+1`, persists progress, and continues.
 - `--max_timeouts` (default `10`) caps timeout skips per invocation; on cap hit, runner stops cleanly after persisting `next_offset`.
+- Blocked skips do not count toward `--max_timeouts`.
 - Supports compatibility alias `--start_offset=...` (same as `--offset=...`).
 - Year-mode responses include strict counters:
   - `skipped_missing_date`

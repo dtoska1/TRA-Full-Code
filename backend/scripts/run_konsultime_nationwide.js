@@ -67,7 +67,7 @@ function sanitizeMessage(message) {
   return raw.slice(0, 400);
 }
 
-function normalizeTimeoutsByMunicipality(value) {
+function normalizeCountsByMunicipality(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const out = {};
   for (const [key, rawCount] of Object.entries(value)) {
@@ -102,6 +102,20 @@ function isTimeoutLikeError({ statusCode, errorCode, message, scrapeError, lastE
   return haystack.includes("timeout");
 }
 
+function isBlockedLikeError({ statusCode, errorCode, message, scrapeError, lastErrorType }) {
+  const status = Number(statusCode);
+  if (status === 403) return true;
+
+  const code = String(errorCode || "").trim().toUpperCase();
+  if (code === "HTTP_403") return true;
+
+  const type = String(lastErrorType || "").trim().toUpperCase();
+  if (type === "HTTP_403") return true;
+
+  const haystack = `${String(message || "")} ${String(scrapeError || "")}`.toUpperCase();
+  return haystack.includes("HTTP_403");
+}
+
 function normalizeProgress(existing, year) {
   const nextOffset =
     existing.next_offset === null
@@ -124,10 +138,15 @@ function normalizeProgress(existing, year) {
     total_inserted: Math.max(0, toInt(existing.total_inserted, 0)),
     total_skipped: Math.max(0, toInt(existing.total_skipped, 0)),
     timeouts_total: Math.max(0, toInt(existing.timeouts_total, 0)),
-    timeouts_by_municipality: normalizeTimeoutsByMunicipality(existing.timeouts_by_municipality),
+    timeouts_by_municipality: normalizeCountsByMunicipality(existing.timeouts_by_municipality),
     last_timeout_municipality_id:
       String(existing.last_timeout_municipality_id || "").trim() || null,
     last_timeout_at_utc: String(existing.last_timeout_at_utc || "").trim() || null,
+    blocked_total: Math.max(0, toInt(existing.blocked_total, 0)),
+    blocked_by_municipality: normalizeCountsByMunicipality(existing.blocked_by_municipality),
+    last_blocked_municipality_id:
+      String(existing.last_blocked_municipality_id || "").trim() || null,
+    last_blocked_at_utc: String(existing.last_blocked_at_utc || "").trim() || null,
     last_ok_utc: existing.last_ok_utc || existing.updatedAt || null,
     last_error: lastError,
   };
@@ -163,6 +182,10 @@ async function run() {
     timeouts_by_municipality: {},
     last_timeout_municipality_id: null,
     last_timeout_at_utc: null,
+    blocked_total: 0,
+    blocked_by_municipality: {},
+    last_blocked_municipality_id: null,
+    last_blocked_at_utc: null,
     last_ok_utc: null,
     last_error: null,
   };
@@ -204,7 +227,34 @@ async function run() {
 
   function printFinalSummary(reason) {
     console.log(
-      `summary year=${year} reason=${reason} total_seen=${progress.total_seen} total_inserted=${progress.total_inserted} total_skipped=${progress.total_skipped} timeouts_total=${progress.timeouts_total} next_offset=${progress.next_offset === null ? "null" : progress.next_offset} progress_file=${progressPath}`
+      `summary year=${year} reason=${reason} total_seen=${progress.total_seen} total_inserted=${progress.total_inserted} total_skipped=${progress.total_skipped} timeouts_total=${progress.timeouts_total} blocked_total=${progress.blocked_total} next_offset=${progress.next_offset === null ? "null" : progress.next_offset} progress_file=${progressPath}`
+    );
+  }
+
+  function recordBlockedSoftSkip({ municipalityId, reasonType, reasonMessage }) {
+    const blockedMunicipalityId = municipalityId || "unknown";
+    const blockedAt = nowIso();
+    const forcedNextOffset = offset + 1;
+
+    progress.blocked_total += 1;
+    progress.blocked_by_municipality[blockedMunicipalityId] =
+      Math.max(0, toInt(progress.blocked_by_municipality[blockedMunicipalityId], 0)) + 1;
+    progress.last_blocked_municipality_id = blockedMunicipalityId;
+    progress.last_blocked_at_utc = blockedAt;
+    progress.next_offset = forcedNextOffset;
+    progress.last_error = {
+      type: "HTTP_403",
+      message: sanitizeMessage(
+        `${String(reasonType || "HTTP_403").trim() || "HTTP_403"} soft-skip at offset=${offset} municipality_id=${blockedMunicipalityId} ${String(reasonMessage || "").trim()}`
+      ),
+      at_utc: blockedAt,
+    };
+    saveProgress(progressPath, progress);
+
+    offset = forcedNextOffset;
+    retryAttempt = 0;
+    console.warn(
+      `year=${year} offset=${offset - 1} limit=${limit} blocked_skip=true municipality_id=${blockedMunicipalityId} blocked_total=${progress.blocked_total} next_offset=${forcedNextOffset}`
     );
   }
 
@@ -266,6 +316,23 @@ async function run() {
           scrapeError,
           lastErrorType,
         });
+        const blockedLike = isBlockedLikeError({
+          statusCode,
+          errorCode,
+          message,
+          scrapeError,
+          lastErrorType,
+        });
+
+        if (blockedLike) {
+          recordBlockedSoftSkip({
+            municipalityId: municipalityIdFromError || "unknown",
+            reasonType: errorCode || lastErrorType || "HTTP_403",
+            reasonMessage: message || scrapeError || "Blocked by bot/Cloudflare protection",
+          });
+          shouldContinueOuterLoop = true;
+          break;
+        }
 
         if (timeoutLike && timeoutAttempt < TIMEOUT_RETRY_BACKOFF_MS.length) {
           const backoffMs = TIMEOUT_RETRY_BACKOFF_MS[timeoutAttempt];
@@ -381,6 +448,23 @@ async function run() {
           scrapeError,
           lastErrorType,
         });
+        const blockedLike = isBlockedLikeError({
+          statusCode,
+          errorCode,
+          message,
+          scrapeError,
+          lastErrorType,
+        });
+
+        if (blockedLike) {
+          recordBlockedSoftSkip({
+            municipalityId: municipalityIdFromError || "unknown",
+            reasonType: lastErrorType || `HTTP_${statusCode}`,
+            reasonMessage: message || scrapeError || "Blocked by bot/Cloudflare protection",
+          });
+          shouldContinueOuterLoop = true;
+          break;
+        }
 
         if (timeoutLike && timeoutAttempt < TIMEOUT_RETRY_BACKOFF_MS.length) {
           const backoffMs = TIMEOUT_RETRY_BACKOFF_MS[timeoutAttempt];
@@ -478,7 +562,7 @@ async function run() {
     saveProgress(progressPath, progress);
 
     console.log(
-      `year=${year} offset=${offset} limit=${limit} seen=${seen} inserted=${inserted} updated=${updated} skipped=${skipped} skipped_missing_date=${skippedMissingDate} skipped_wrong_year=${skippedWrongYear} total_seen=${progress.total_seen} total_inserted=${progress.total_inserted} total_skipped=${progress.total_skipped} timeouts_total=${progress.timeouts_total} next_offset=${nextOffset === null ? "null" : nextOffset}`
+      `year=${year} offset=${offset} limit=${limit} seen=${seen} inserted=${inserted} updated=${updated} skipped=${skipped} skipped_missing_date=${skippedMissingDate} skipped_wrong_year=${skippedWrongYear} total_seen=${progress.total_seen} total_inserted=${progress.total_inserted} total_skipped=${progress.total_skipped} timeouts_total=${progress.timeouts_total} blocked_total=${progress.blocked_total} next_offset=${nextOffset === null ? "null" : nextOffset}`
     );
 
     if (nextOffset === null) {
