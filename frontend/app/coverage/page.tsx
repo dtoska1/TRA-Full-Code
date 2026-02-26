@@ -10,7 +10,10 @@ type CoverageItem = {
   source_registry_id: string | null;
   registry_url: string | null;
   registry_url_set: boolean;
+  checked_flag?: boolean;
   category_checked: boolean;
+  is_nationwide_source?: boolean;
+  registry_url_origin?: "municipality" | "nationwide";
   verification_status: string | null;
   last_error_type: string | null;
   cooldown_until_utc: string | null;
@@ -45,6 +48,20 @@ function rowKey(item: CoverageItem): string {
 
 function sanitizeYearInput(value: string): string {
   return String(value || "").replace(/[^\d]/g, "").slice(0, 4);
+}
+
+function isNationwideSource(item: CoverageItem): boolean {
+  return item.is_nationwide_source === true || item.registry_url_origin === "nationwide";
+}
+
+function resolveCheckedFlag(item: CoverageItem): boolean {
+  if (typeof item.checked_flag === "boolean") return item.checked_flag;
+  return item.category_checked;
+}
+
+function resolveUrlSourceLabel(item: CoverageItem): string {
+  if (isNationwideSource(item)) return "Nationwide source";
+  return item.registry_url_set ? "Municipality URL set" : "Municipality URL missing";
 }
 
 export default function CoveragePage() {
@@ -194,7 +211,7 @@ export default function CoveragePage() {
         });
         setRowMessage((prev) => ({
           ...prev,
-          [key]: `Checked updated: ${result.checked ? "CHECKED" : "UNCHECKED"}`,
+          [key]: `Auto-publish updated: ${result.checked ? "ENABLED" : "DISABLED"}`,
         }));
       }
 
@@ -287,18 +304,19 @@ export default function CoveragePage() {
         <p className="mb-3 text-xs text-slate-600">
           Row actions use optional year. Leave year empty to run/publish without year filter.
         </p>
+        <p className="mb-3 text-xs text-slate-600">
+          Prokurime uses a nationwide API; no per-municipality URL is required.
+        </p>
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[1480px] text-left text-xs">
+          <table className="w-full min-w-[1320px] text-left text-xs">
             <thead>
               <tr className="border-b border-slate-200 text-slate-600">
                 <th className="py-2 pr-3 font-semibold">name_key</th>
                 <th className="py-2 pr-3 font-semibold">category</th>
-                <th className="py-2 pr-3 font-semibold">registry_url_set</th>
+                <th className="py-2 pr-3 font-semibold">URL source</th>
                 <th className="py-2 pr-3 font-semibold">registry_url</th>
-                <th className="py-2 pr-3 font-semibold">category_checked</th>
-                <th className="py-2 pr-3 font-semibold">verification_status</th>
-                <th className="py-2 pr-3 font-semibold">last_error_type</th>
-                <th className="py-2 pr-3 font-semibold">cooldown_until_utc</th>
+                <th className="py-2 pr-3 font-semibold">Auto-publish (per category)</th>
+                <th className="py-2 pr-3 font-semibold">Source reviewed (legacy)</th>
                 <th className="py-2 pr-3 font-semibold">last_checked_utc</th>
                 <th className="py-2 pr-3 font-semibold">published_count</th>
                 <th className="py-2 pr-3 font-semibold">draft_count</th>
@@ -313,11 +331,12 @@ export default function CoveragePage() {
                 const busy = !!rowBusy[key];
                 const yearValue = rowYear[key] || "";
                 const actionMessage = rowMessage[key] || "";
+                const checkedFlag = resolveCheckedFlag(item);
                 return (
                   <tr key={key} className="border-b border-slate-100 align-top">
                     <td className="py-2 pr-3 font-medium text-slate-900">{item.name_key}</td>
                     <td className="py-2 pr-3 text-slate-700">{item.category}</td>
-                    <td className="py-2 pr-3 text-slate-700">{item.registry_url_set ? "yes" : "no"}</td>
+                    <td className="py-2 pr-3 text-slate-700">{resolveUrlSourceLabel(item)}</td>
                     <td className="py-2 pr-3">
                       {item.registry_url ? (
                         <a
@@ -332,10 +351,8 @@ export default function CoveragePage() {
                         "-"
                       )}
                     </td>
-                    <td className="py-2 pr-3 text-slate-700">{item.category_checked ? "CHECKED" : "UNCHECKED"}</td>
+                    <td className="py-2 pr-3 text-slate-700">{checkedFlag ? "ENABLED" : "DISABLED"}</td>
                     <td className="py-2 pr-3 text-slate-700">{item.verification_status || "-"}</td>
-                    <td className="py-2 pr-3 text-slate-700">{item.last_error_type || "-"}</td>
-                    <td className="py-2 pr-3 text-slate-700">{formatValue(item.cooldown_until_utc)}</td>
                     <td className="py-2 pr-3 text-slate-700">{formatValue(item.last_checked_utc)}</td>
                     <td className="py-2 pr-3 text-slate-700">{item.published_count}</td>
                     <td className="py-2 pr-3 text-slate-700">{item.draft_count}</td>
@@ -380,7 +397,7 @@ export default function CoveragePage() {
                             disabled={busy || !token.trim()}
                             className="rounded border border-emerald-300 bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700 disabled:opacity-60"
                           >
-                            Mark CHECKED
+                            Enable auto-publish
                           </button>
                           <button
                             type="button"
@@ -388,7 +405,7 @@ export default function CoveragePage() {
                             disabled={busy || !token.trim()}
                             className="rounded border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-700 disabled:opacity-60"
                           >
-                            Mark UNCHECKED
+                            Disable auto-publish
                           </button>
                         </div>
                         {actionMessage ? (

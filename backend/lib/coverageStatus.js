@@ -1,8 +1,16 @@
 "use strict";
 
 const COVERAGE_CATEGORIES = ["Vendime", "Prokurime", "Konsultime publike"];
+const DEFAULT_PROKURIME_NATIONWIDE_SOURCE_URL =
+  "https://www.app.gov.al/eksportimi-i-procedurave-te-publikuara/";
+
+function resolveProkurimeNationwideSourceUrl() {
+  const configured = String(process.env.PROKURIME_NATIONWIDE_SOURCE_URL || "").trim();
+  return configured || DEFAULT_PROKURIME_NATIONWIDE_SOURCE_URL;
+}
 
 async function fetchCoverageSummary(pool, generatedAtUtc = new Date().toISOString()) {
+  const prokurimeNationwideSourceUrl = resolveProkurimeNationwideSourceUrl();
   const query = `
     WITH categories AS (
       SELECT * FROM (VALUES
@@ -56,26 +64,36 @@ async function fetchCoverageSummary(pool, generatedAtUtc = new Date().toISOStrin
       r.source_registry_id,
       CASE
         WHEN c.category = 'Vendime' THEN r.vendime_url
-        WHEN c.category = 'Prokurime' THEN r.prokurime_url
+        WHEN c.category = 'Prokurime' THEN $1::text
         WHEN c.category = 'Konsultime publike' THEN r.konsultime_url
         ELSE NULL
       END AS registry_url,
-      (
-        CASE
-          WHEN c.category = 'Vendime' THEN r.vendime_url
-          WHEN c.category = 'Prokurime' THEN r.prokurime_url
-          WHEN c.category = 'Konsultime publike' THEN r.konsultime_url
-          ELSE NULL
-        END
-      ) IS NOT NULL
-      AND btrim(
-        CASE
-          WHEN c.category = 'Vendime' THEN COALESCE(r.vendime_url, '')
-          WHEN c.category = 'Prokurime' THEN COALESCE(r.prokurime_url, '')
-          WHEN c.category = 'Konsultime publike' THEN COALESCE(r.konsultime_url, '')
-          ELSE ''
-        END
-      ) <> '' AS registry_url_set,
+      CASE
+        WHEN c.category = 'Vendime' THEN COALESCE(r.vendime_checked, FALSE)
+        WHEN c.category = 'Prokurime' THEN COALESCE(r.prokurime_checked, FALSE)
+        WHEN c.category = 'Konsultime publike' THEN COALESCE(r.konsultime_checked, FALSE)
+        ELSE FALSE
+      END AS checked_flag,
+      CASE
+        WHEN c.category = 'Prokurime' THEN TRUE
+        WHEN c.category = 'Vendime' THEN (
+          r.vendime_url IS NOT NULL
+          AND btrim(COALESCE(r.vendime_url, '')) <> ''
+        )
+        WHEN c.category = 'Konsultime publike' THEN (
+          r.konsultime_url IS NOT NULL
+          AND btrim(COALESCE(r.konsultime_url, '')) <> ''
+        )
+        ELSE FALSE
+      END AS registry_url_set,
+      CASE
+        WHEN c.category = 'Prokurime' THEN TRUE
+        ELSE FALSE
+      END AS is_nationwide_source,
+      CASE
+        WHEN c.category = 'Prokurime' THEN 'nationwide'::text
+        ELSE 'municipality'::text
+      END AS registry_url_origin,
       CASE
         WHEN c.category = 'Vendime' THEN COALESCE(r.vendime_checked, FALSE)
         WHEN c.category = 'Prokurime' THEN COALESCE(r.prokurime_checked, FALSE)
@@ -83,8 +101,8 @@ async function fetchCoverageSummary(pool, generatedAtUtc = new Date().toISOStrin
         ELSE FALSE
       END AS category_checked,
       r.verification_status,
-      r.last_error_type,
-      r.cooldown_until_utc,
+      NULL::text AS last_error_type,
+      NULL::timestamptz AS cooldown_until_utc,
       r.last_checked_utc,
       COALESCE(i.published_count, 0)::int AS published_count,
       COALESCE(i.draft_count, 0)::int AS draft_count,
@@ -133,7 +151,7 @@ async function fetchCoverageSummary(pool, generatedAtUtc = new Date().toISOStrin
     ORDER BY r.name_key ASC, c.category ASC;
   `;
 
-  const result = await pool.query(query);
+  const result = await pool.query(query, [prokurimeNationwideSourceUrl]);
   const items = result.rows;
   const municipalityCount = new Set(items.map((row) => String(row.municipality_id))).size;
 

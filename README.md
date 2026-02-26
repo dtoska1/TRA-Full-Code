@@ -81,6 +81,7 @@ Example (local-only values):
 - `MEILI_HOST=http://localhost:7700`
 - `MEILI_MASTER_KEY=<MEILI_MASTER_KEY>`
 - `MANUAL_UPLOAD_MAX_BYTES=20971520`
+- `PROKURIME_NATIONWIDE_SOURCE_URL=https://www.app.gov.al/eksportimi-i-procedurave-te-publikuara/`
 
 > `POSTGRES_PASSWORD` should match what is set in `docker-compose.yml` for the Postgres service (or whatever password your existing DB volume was initialized with).
 
@@ -112,6 +113,39 @@ This adds per-category flags on `source_registry`:
 - `konsultime_checked`
 
 No automatic backfill is performed by migration.
+
+### 5.2.1) Optional admin-only CHECKED reset (only after Dion confirms)
+
+If category flags were enabled too broadly and you want to reset only `Prokurime` and
+`Konsultime publike` (while leaving `Vendime` unchanged), run:
+
+```sql
+-- Pre-check
+SELECT
+  COUNT(*) FILTER (WHERE is_primary = TRUE) AS primary_total,
+  COUNT(*) FILTER (WHERE is_primary = TRUE AND vendime_checked = TRUE) AS vendime_true,
+  COUNT(*) FILTER (WHERE is_primary = TRUE AND prokurime_checked = TRUE) AS prokurime_true,
+  COUNT(*) FILTER (WHERE is_primary = TRUE AND konsultime_checked = TRUE) AS konsultime_true
+FROM source_registry;
+
+-- Reset only non-Vendime category flags
+UPDATE source_registry
+SET
+  prokurime_checked = FALSE,
+  konsultime_checked = FALSE,
+  updated_at = now()
+WHERE is_primary = TRUE;
+
+-- Post-check
+SELECT
+  COUNT(*) FILTER (WHERE is_primary = TRUE) AS primary_total,
+  COUNT(*) FILTER (WHERE is_primary = TRUE AND vendime_checked = TRUE) AS vendime_true,
+  COUNT(*) FILTER (WHERE is_primary = TRUE AND prokurime_checked = TRUE) AS prokurime_true,
+  COUNT(*) FILTER (WHERE is_primary = TRUE AND konsultime_checked = TRUE) AS konsultime_true
+FROM source_registry;
+```
+
+Do not run this in production without explicit operator confirmation.
 
 ### 6) Run the backend API
 
@@ -305,6 +339,11 @@ curl.exe -i "http://localhost:5050/api/admin/coverage" -H "Authorization: Bearer
 Expected:
 - without token: HTTP `401`
 - with token: HTTP `200` and coverage payload
+
+Coverage payload notes:
+- Rows are `(municipality_id, category)` and should be `61 * 3 = 183` in a full local seed.
+- `Prokurime` is modeled as a nationwide source in coverage (`registry_url_set=true` without requiring per-municipality `prokurime_url`).
+- `last_error_type` and `cooldown_until_utc` are intentionally `null` in coverage rows because these fields are currently municipality-wide, not category-scoped.
 
 Admin publish/check endpoints:
 

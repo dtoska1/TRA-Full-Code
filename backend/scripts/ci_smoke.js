@@ -81,10 +81,47 @@ async function run() {
     Array.isArray(coverageWithAuth.json.items),
     "GET /api/admin/coverage expected items array"
   );
-  if (coverageWithAuth.json.items.length > 0) {
+  const coverageItems = coverageWithAuth.json.items || [];
+  const totalMunicipalities = Number(coverageWithAuth.json.total_municipalities || 0);
+  assert(
+    Number.isInteger(totalMunicipalities) && totalMunicipalities >= 0,
+    "GET /api/admin/coverage expected numeric total_municipalities"
+  );
+  assert(
+    coverageItems.length === totalMunicipalities * 3,
+    "GET /api/admin/coverage expected rows == total_municipalities * 3"
+  );
+  if (coverageItems.length > 0) {
     assert(
-      typeof coverageWithAuth.json.items[0].category_checked === "boolean",
+      typeof coverageItems[0].category_checked === "boolean",
       "GET /api/admin/coverage expected category_checked boolean on rows"
+    );
+    assert(
+      typeof coverageItems[0].checked_flag === "boolean",
+      "GET /api/admin/coverage expected checked_flag boolean on rows"
+    );
+    const prokurimeCoverageRow = coverageItems.find((row) => String(row.category) === "Prokurime");
+    assert(prokurimeCoverageRow, "GET /api/admin/coverage expected at least one Prokurime row");
+    assert(
+      prokurimeCoverageRow.is_nationwide_source === true,
+      "GET /api/admin/coverage expected Prokurime row is_nationwide_source=true"
+    );
+    assert(
+      prokurimeCoverageRow.registry_url_set === true,
+      "GET /api/admin/coverage expected Prokurime row registry_url_set=true"
+    );
+    assert(
+      typeof prokurimeCoverageRow.registry_url === "string" &&
+        String(prokurimeCoverageRow.registry_url).trim().length > 0,
+      "GET /api/admin/coverage expected Prokurime row registry_url non-empty"
+    );
+    assert(
+      coverageItems.every((row) => row.last_error_type === null),
+      "GET /api/admin/coverage expected last_error_type=null on all coverage rows"
+    );
+    assert(
+      coverageItems.every((row) => row.cooldown_until_utc === null),
+      "GET /api/admin/coverage expected cooldown_until_utc=null on all coverage rows"
     );
   }
 
