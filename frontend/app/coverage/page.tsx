@@ -335,6 +335,7 @@ export default function CoveragePage() {
                 const yearValue = rowYear[key] || "";
                 const actionMessage = rowMessage[key] || "";
                 const checkedFlag = resolveCheckedFlag(item);
+                const checkedLabel = checkedFlag ? "ENABLED" : "DISABLED";
                 return (
                   <tr key={key} className="border-b border-slate-100 align-top">
                     <td className="py-2 pr-3 font-medium text-slate-900">{item.name_key}</td>
@@ -354,9 +355,7 @@ export default function CoveragePage() {
                         "-"
                       )}
                     </td>
-                    <td className="py-2 pr-3 text-slate-700">
-                      {item.category_checked ? "ENABLED" : "DISABLED"}
-                    </td>
+                    <td className="py-2 pr-3 text-slate-700">{checkedLabel}</td>
                     <td className="py-2 pr-3 text-slate-700">{item.verification_status || "-"}</td>
                     <td className="py-2 pr-3 text-slate-700">{formatValue(item.last_checked_utc)}</td>
                     <td className="py-2 pr-3 text-slate-700">{item.published_count}</td>
