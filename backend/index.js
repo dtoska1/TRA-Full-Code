@@ -212,7 +212,7 @@ const KONSULTIME_FALLBACK_KEYWORDS = [
 ];
 const KONSULTIME_FALLBACK_MAX_LINKS = 6;
 const KONSULTIME_NO_YEAR_KEEP_RE =
-  /\b(konsultim[a-z]*|konsultime[a-z]*|degjes[a-z]*|njoftim[a-z]*|proces\s*verbal[a-z]*|takim[a-z]*|projekt[a-z]*|draft[a-z]*)\b/;
+  /\b(konsultim[a-z]*|konsultime[a-z]*|degjes[a-z]*|njoftim[a-z]*|proces\s*verbal[a-z]*|takim[a-z]*|projekt[a-z]*|draft[a-z]*|plan[a-z]*|strategji[a-z]*|buxhet[a-z]*|pba|pyetesor[a-z]*|anket[a-z]*|koment[a-z]*)\b/;
 const SEARCH_INDEX_UID = String(process.env.MEILI_PUBLIC_INDEX_UID || "public_items_v1").trim();
 
 try {
@@ -2986,6 +2986,9 @@ app.post("/api/scrape/run", async (req, res) => {
     ["1", "true", "yes", "on"].includes(
       String(req.query.force_publish || "").trim().toLowerCase()
     );
+  const debugEnabled = ["1", "true", "yes", "on"].includes(
+    String(req.query.debug || "").trim().toLowerCase()
+  );
   const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 50));
   const offsetRaw =
     req.query.offset !== undefined && req.query.offset !== null
@@ -3664,6 +3667,7 @@ app.post("/api/scrape/run", async (req, res) => {
           let skipped_no_year_source_policy = 0;
           let parsed_kept = 0;
           let sample_kept_title = null;
+          const keptTitlesSample = [];
           const keptDedupKeys = new Set();
           let uniqueScrapedItems = mergedScrapedItems;
           if (category === "Konsultime publike" && fallbackSummary.attempted) {
@@ -3760,6 +3764,7 @@ app.post("/api/scrape/run", async (req, res) => {
             parsed_kept++;
             sourceSummary.kept++;
             if (!sample_kept_title) sample_kept_title = title;
+            if (title && keptTitlesSample.length < 3) keptTitlesSample.push(title);
             const titleNormalized = it.title_normalized || normalizeTitle(title);
             const dedupKey = dedupKeyRegistryDocumentV1({
               municipalityId,
@@ -3861,6 +3866,16 @@ app.post("/api/scrape/run", async (req, res) => {
                 ? fallbackSummary
                 : undefined,
             sample_title: sample_kept_title || baselineResult.items[0]?.title || null,
+            debug: debugEnabled
+              ? {
+                  used_url: baselineSummary.used_url || baselineTargetUrl,
+                  kept_titles_sample: keptTitlesSample.slice(0, 3),
+                  fallback_used_urls:
+                    category === "Konsultime publike" && fallbackSummary.attempted
+                      ? (fallbackSummary.used_links || []).slice(0, 10)
+                      : [],
+                }
+              : undefined,
             next: konsultimeNationwideState
               ? "Next: continue konsultime nationwide run from next_offset."
               : "Next: verify /api/feed returns this municipality/category.",

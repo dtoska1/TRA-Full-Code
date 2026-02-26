@@ -516,7 +516,7 @@ How it works:
 Konsultime nationwide runner (single `next_offset` resume pointer):
 
 ```bash
-node backend/scripts/run_konsultime_nationwide.js --year=2025 --limit=80 --sleep_ms=1200 --max_runtime_ms=0 --resume=true
+node backend/scripts/run_konsultime_nationwide.js --year=2025 --limit=80 --sleep_ms=1200 --max_runtime_ms=0 --resume=true --max_timeouts=10
 ```
 
 How it works:
@@ -525,11 +525,26 @@ How it works:
 - Uses `next_offset` from API response as the authoritative resume pointer.
 - Writes progress to `backend/tmp/konsultime_progress_YYYY.json`.
 - If HTTP `429` is returned, retries the same offset with exponential backoff.
+- Timeout-like failures (`HTTP 504`, timeout messages, or `ETIMEDOUT`/`ECONNRESET`/`EAI_AGAIN`) retry the same offset up to 3 times with fixed backoff: `5s`, `15s`, `45s`.
+- If timeout retries are exhausted, the runner records timeout telemetry, advances `next_offset` by `+1` (skip one municipality), persists progress, and continues.
+- `--max_timeouts` (default `10`) caps timeout skips per invocation; on cap hit, runner stops cleanly after persisting `next_offset`.
 - Supports compatibility alias `--start_offset=...` (same as `--offset=...`).
 - Year-mode responses include strict counters:
   - `skipped_missing_date`
   - `skipped_wrong_year`
 - Existing no-year source policy remains unchanged in `/api/scrape/run` for Konsultime.
+
+Konsultime extraction notes (v1 improvements):
+- Listing extraction now covers WordPress/category pagination, table/registry rows, and mixed HTML post listings.
+- Mixed-page candidates are kept only when Konsultime-focused keywords match (`konsultim`, `degjes`, `projekt`, `draft`, `plan`, `strategji`, `buxhet`, `pba`, `pyetesor`, `anket`, `koment`).
+- No-year policy remains authoritative in `/api/scrape/run`:
+  - same-host HTML is allowed,
+  - external PDFs are only allowed when the referrer/source page is municipality-host.
+- Year mode remains strict: rows with missing date are counted in `skipped_missing_date`; out-of-year rows are counted in `skipped_wrong_year`.
+- Optional debug mode:
+  - call `/api/scrape/run?...&debug=true`
+  - response adds `debug.used_url` and `debug.kept_titles_sample` (up to first 3 kept titles).
+  - when fallback discovery is used, response also includes `debug.fallback_used_urls`.
 
 Registry category batch runner (Vendime / Prokurime / Konsultime):
 
@@ -675,3 +690,51 @@ It sets:
 - `updated_at = now()`
 
 It does not set `verification_status` to `CHECKED`.
+
+## Konsultime URL discovery workflow
+
+From `backend/`:
+
+```bash
+npm run discover:konsultime
+```
+
+This writes `backend/tmp/konsultime_discovery.json` with a review-first shape:
+
+```json
+{
+  "generated_at": "...",
+  "candidates": [
+    {
+      "name_key": "tirane",
+      "base_url": "https://tirana.al/",
+      "best_url": "https://tirana.al/...",
+      "score": 123,
+      "evidence": ["..."],
+      "confirmed": false
+    }
+  ]
+}
+```
+
+Notes:
+- Discovery only targets municipalities where `source_registry.konsultime_url` is null/blank.
+- Discovery does not write to `source_registry`.
+- Candidate pages are constrained to same-host HTML pages (document links are not chosen as `best_url`).
+
+After review, set `confirmed: true` for rows to apply (optional override fields: `selected_konsultime_url` or `selected_url`), then run:
+
+```bash
+npm run apply:konsultime
+```
+
+`apply:konsultime` applies only confirmed rows and only when `source_registry.konsultime_url` is still null/blank.
+It sets:
+- `konsultime_url`
+- `last_error_type = NULL`
+- `cooldown_until_utc = NULL`
+- `final_url = NULL`
+- `homepage_status = 'OK'`
+- `updated_at = now()`
+
+It does not change `konsultime_checked`.

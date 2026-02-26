@@ -13,6 +13,8 @@ const MAX_CLOUDFLARE_REDIRECTS = (() => {
   const raw = Number.parseInt(String(process.env.MAX_CLOUDFLARE_REDIRECTS || ""), 10);
   return Number.isFinite(raw) && raw >= 0 ? raw : 2;
 })();
+const KONSULTIME_MIXED_KEEP_RE =
+  /\b(konsultim[a-z]*|konsultime[a-z]*|degjes[a-z]*|njoftim[a-z]*|proces\s*verbal[a-z]*|takim[a-z]*|projekt[a-z]*|draft[a-z]*|plan[a-z]*|strategji[a-z]*|buxhet[a-z]*|pba|pyetesor[a-z]*|anket[a-z]*|koment[a-z]*)\b/;
 
 function normalizeTitle(s) {
   return String(s || "")
@@ -25,6 +27,76 @@ function normalizeTitle(s) {
 
 function cleanText(t) {
   return String(t || "").replace(/\s+/g, " ").trim();
+}
+
+function normalizeForActionLabel(s) {
+  return normalizeTitle(s).replace(/\s+/g, " ").trim();
+}
+
+const KONSULTIME_ACTION_LABELS = new Set(
+  ["shiko", "lexo", "lexo me shume", "download", "shkarko", "view"].map((it) =>
+    normalizeForActionLabel(it)
+  )
+);
+const KONSULTIME_ULTRA_GENERIC_LABELS = new Set(
+  ["njoftim", "njoftime", "bashkia"].map((it) => normalizeForActionLabel(it))
+);
+const GENERIC_TITLE_LABELS = new Set(
+  [
+    "shkarko",
+    "download",
+    "pdf",
+    "shiko vendimin",
+    "kliko ketu",
+    "klikoni ketu",
+    "lexo me shume",
+    "read more",
+    "shiko",
+    "lexo",
+    "view",
+  ].map((it) => normalizeForActionLabel(it))
+);
+
+function isKonsultimeActionLabelTitle(s) {
+  const normalized = normalizeForActionLabel(s);
+  if (!normalized) return false;
+  return KONSULTIME_ACTION_LABELS.has(normalized);
+}
+
+function normalizeMunicipalityContext(municipalityContext) {
+  return normalizeTitle(String(municipalityContext || "").replace(/[-_]+/g, " "));
+}
+
+function isUltraGenericKonsultimeTitle(title, municipalityContext = "") {
+  const normalizedTitle = normalizeTitle(title);
+  if (!normalizedTitle) return false;
+  if (KONSULTIME_ULTRA_GENERIC_LABELS.has(normalizedTitle)) return true;
+
+  const municipalityNormalized = normalizeMunicipalityContext(municipalityContext);
+  if (!municipalityNormalized) return false;
+  return normalizedTitle === `bashkia ${municipalityNormalized}`;
+}
+
+function isInvalidKonsultimeTitle(s, municipalityContext = "") {
+  const normalized = normalizeTitle(s);
+  if (!normalized) return true;
+  if (normalized.length < 4) return true;
+  if (/^(https?:\/\/|www\.)/i.test(String(s || "").trim())) return true;
+  if (isKonsultimeActionLabelTitle(s)) return true;
+  if (isUltraGenericKonsultimeTitle(s, municipalityContext)) return true;
+  return false;
+}
+
+function looksLikeUrlText(s) {
+  const text = cleanText(s);
+  if (!text) return false;
+  return /^(https?:\/\/|www\.)/i.test(text);
+}
+
+function looksLikeKonsultimeMixed({ title = "", url = "", context = "" }) {
+  const haystack = normalizeTitle(`${title} ${url} ${context}`.trim());
+  if (!haystack) return false;
+  return KONSULTIME_MIXED_KEEP_RE.test(haystack);
 }
 
 function makeAbsolute(baseUrl, href) {
@@ -130,7 +202,17 @@ function looksLikeDoc(url) {
   return false;
 }
 
-function buildItem({ baseUrl, linkUrl, titleText }) {
+function buildItem({ baseUrl, linkUrl, titleText, sourcePageUrl = null }) {
+  return buildItemWithOptions({
+    baseUrl,
+    linkUrl,
+    titleText,
+    sourcePageUrl,
+    publishedDate: null,
+  });
+}
+
+function buildItemWithOptions({ baseUrl, linkUrl, titleText, sourcePageUrl, publishedDate }) {
   const abs = makeAbsolute(baseUrl, linkUrl);
   if (!abs) return null;
 
@@ -144,6 +226,7 @@ function buildItem({ baseUrl, linkUrl, titleText }) {
 
   // try extracting date from filename / url
   const published_date =
+    publishedDate ||
     parseDateFromText(fn) ||
     parseDateFromText(abs);
 
@@ -151,6 +234,7 @@ function buildItem({ baseUrl, linkUrl, titleText }) {
     title,
     title_normalized: normalizeTitle(title),
     source_url: abs,
+    source_page_url: sourcePageUrl ? makeAbsolute(baseUrl, sourcePageUrl) : null,
     published_date: published_date || null,
     number: null,
   };
@@ -158,17 +242,9 @@ function buildItem({ baseUrl, linkUrl, titleText }) {
 
 
 function isGenericTitle(s) {
-  const t = String(s || "").trim().toLowerCase();
-  return [
-    "shkarko",
-    "download",
-    "pdf",
-    "shiko vendimin",
-    "kliko këtu",
-    "klikoni këtu",
-    "lexo më shumë",
-    "read more",
-  ].includes(t);
+  const t = normalizeForActionLabel(s);
+  if (!t) return false;
+  return GENERIC_TITLE_LABELS.has(t);
 }
 
 function filenameFromUrl(u) {
@@ -184,7 +260,7 @@ function filenameFromUrl(u) {
 function titleFromFilename(fn) {
   if (!fn) return "";
   return fn
-    .replace(/\.pdf(\?.*)?$/i, "")
+    .replace(/\.(pdf|doc|docx|rtf|xls|xlsx|zip|rar)(\?.*)?$/i, "")
     .replace(/[_-]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -214,6 +290,44 @@ function parseDateFromText(text) {
   return null;
 }
 
+function extractLikelyDateFromHtml(html) {
+  const $ = cheerio.load(html || "");
+
+  const metaCandidates = [
+    $('meta[property="article:published_time"]').attr("content"),
+    $('meta[property="article:modified_time"]').attr("content"),
+    $('meta[property="og:published_time"]').attr("content"),
+    $('meta[name="date"]').attr("content"),
+    $('meta[name="publish_date"]').attr("content"),
+  ];
+  for (const candidate of metaCandidates) {
+    const parsed = parseDateFromText(candidate);
+    if (parsed) return parsed;
+  }
+
+  const timeCandidates = [];
+  $("time[datetime]").each((_, el) => {
+    timeCandidates.push($(el).attr("datetime"));
+    timeCandidates.push($(el).text());
+  });
+  for (const candidate of timeCandidates) {
+    const parsed = parseDateFromText(candidate);
+    if (parsed) return parsed;
+  }
+
+  const textDateCandidates = [];
+  $(
+    ".post-date, .entry-date, .published, .date, .elementor-post-date, .meta-date, .posted-on"
+  ).each((_, el) => textDateCandidates.push($(el).text()));
+  for (const candidate of textDateCandidates) {
+    const parsed = parseDateFromText(candidate);
+    if (parsed) return parsed;
+  }
+
+  const heading = cleanText($("h1").first().text()) || cleanText($("title").first().text());
+  return parseDateFromText(heading);
+}
+
 // Extract URLs from onclick="window.open('...')" etc.
 function extractUrlsFromOnclick(onclick) {
   const s = String(onclick || "");
@@ -227,7 +341,12 @@ function extractUrlsFromOnclick(onclick) {
 }
 
 // ✅ Extract doc links from many attribute places (not just <a href>)
-function extractDocLinksFromHtml({ baseUrl, html, pageTitleFallback = "" }) {
+function extractDocLinksFromHtml({
+  baseUrl,
+  html,
+  pageTitleFallback = "",
+  sourcePageUrl = null,
+}) {
   const $ = cheerio.load(html);
   const out = [];
 
@@ -242,6 +361,7 @@ function extractDocLinksFromHtml({ baseUrl, html, pageTitleFallback = "" }) {
       baseUrl,
       linkUrl: abs,
       titleText: cleanText($(el).text()) || pageTitleFallback,
+      sourcePageUrl: sourcePageUrl || baseUrl,
     });
     if (item) out.push(item);
   });
@@ -253,7 +373,12 @@ function extractDocLinksFromHtml({ baseUrl, html, pageTitleFallback = "" }) {
     if (!abs) return;
     if (!looksLikeDoc(abs)) return;
 
-    const item = buildItem({ baseUrl, linkUrl: abs, titleText: pageTitleFallback });
+    const item = buildItem({
+      baseUrl,
+      linkUrl: abs,
+      titleText: pageTitleFallback,
+      sourcePageUrl: sourcePageUrl || baseUrl,
+    });
     if (item) out.push(item);
   });
 
@@ -270,7 +395,12 @@ function extractDocLinksFromHtml({ baseUrl, html, pageTitleFallback = "" }) {
     if (!looksLikeDoc(abs)) return;
 
     const txt = cleanText($(el).text()) || pageTitleFallback;
-    const item = buildItem({ baseUrl, linkUrl: abs, titleText: txt });
+    const item = buildItem({
+      baseUrl,
+      linkUrl: abs,
+      titleText: txt,
+      sourcePageUrl: sourcePageUrl || baseUrl,
+    });
     if (item) out.push(item);
   });
 
@@ -285,7 +415,12 @@ function extractDocLinksFromHtml({ baseUrl, html, pageTitleFallback = "" }) {
       if (!looksLikeDoc(abs)) continue;
 
       const txt = cleanText($(el).text()) || pageTitleFallback;
-      const item = buildItem({ baseUrl, linkUrl: abs, titleText: txt });
+      const item = buildItem({
+        baseUrl,
+        linkUrl: abs,
+        titleText: txt,
+        sourcePageUrl: sourcePageUrl || baseUrl,
+      });
       if (item) out.push(item);
     }
   });
@@ -298,11 +433,281 @@ function extractDocLinksFromHtml({ baseUrl, html, pageTitleFallback = "" }) {
     if (!abs) continue;
     if (!looksLikeDoc(abs)) continue;
 
-    const item = buildItem({ baseUrl, linkUrl: abs, titleText: pageTitleFallback });
+    const item = buildItem({
+      baseUrl,
+      linkUrl: abs,
+      titleText: pageTitleFallback,
+      sourcePageUrl: sourcePageUrl || baseUrl,
+    });
     if (item) out.push(item);
   }
 
   return out;
+}
+
+function isAssetLikeUrl(url) {
+  return /\.(png|jpg|jpeg|webp|gif|svg|ico|css|js|map|woff2?|ttf|otf|eot)(\?|#|$)/i.test(
+    String(url || "").toLowerCase()
+  );
+}
+
+function extractNearbyListingHeading(html) {
+  const $ = cheerio.load(html || "");
+  return cleanText(
+    $("caption").first().text() ||
+      $("h1").first().text() ||
+      $("h2").first().text() ||
+      $(".wp-block-heading").first().text() ||
+      $(".elementor-heading-title").first().text() ||
+      $("title").first().text()
+  );
+}
+
+function buildHeadingWithDateFallback({ heading, publishedDate, sourceUrl }) {
+  const cleanHeading = cleanText(heading);
+  if (!cleanHeading) return "";
+  const dateCandidate = publishedDate || parseDateFromText(sourceUrl) || "";
+  return cleanText(`${cleanHeading}${dateCandidate ? ` ${dateCandidate}` : ""}`);
+}
+
+function titleFromUrlSlug(url) {
+  try {
+    const parsed = new URL(String(url || ""));
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    const slug = decodeURIComponent(parts[parts.length - 1] || "");
+    return cleanText(slug.replace(/\.(html?)$/i, "").replace(/[_-]+/g, " "));
+  } catch {
+    return "";
+  }
+}
+
+function refineKonsultimeItemTitle({ item, municipalityKey, listingHeading, listingTitle = "" }) {
+  if (!item || !item.source_url) return null;
+  const filenameCandidate = titleFromFilename(filenameFromUrl(item.source_url));
+  const headingCandidate = buildHeadingWithDateFallback({
+    heading: listingHeading,
+    publishedDate: item.published_date || null,
+    sourceUrl: item.source_url,
+  });
+  const listingTitleCandidate = cleanText(listingTitle);
+  const urlSlugCandidate = titleFromUrlSlug(item.source_url);
+  const candidates = [item.title || "", filenameCandidate, listingTitleCandidate, headingCandidate, urlSlugCandidate];
+  const chosenTitle = candidates.find((title) => !isInvalidKonsultimeTitle(title, municipalityKey)) || "";
+  if (!chosenTitle) return null;
+
+  const publishedDate =
+    item.published_date ||
+    parseDateFromText(chosenTitle) ||
+    parseDateFromText(item.source_url) ||
+    null;
+  return {
+    ...item,
+    title: chosenTitle,
+    title_normalized: normalizeTitle(chosenTitle),
+    published_date: publishedDate,
+  };
+}
+
+function extractKonsultimeTableItems({ baseUrl, html, municipalityKey = "" }) {
+  const $ = cheerio.load(html || "");
+  const out = [];
+  const pageContext = cleanText(
+    $("h1").first().text() || $("title").first().text() || $("main").first().text()
+  ).slice(0, 400);
+
+  $("table tr").each((_, row) => {
+    const $row = $(row);
+    const $cells = $row.find("th, td");
+    if (!$cells.length) return;
+
+    const rowText = cleanText($row.text());
+    if (!rowText) return;
+
+    let linkUrl = null;
+    let linkText = "";
+    $row.find("a[href]").each((__, a) => {
+      if (linkUrl) return;
+      const href = $(a).attr("href");
+      const abs = resolveDocumentCandidateUrl(baseUrl, href);
+      if (!abs) return;
+      if (isAssetLikeUrl(abs)) return;
+      if (!looksLikeDoc(abs) && !isProbablySameSite(baseUrl, abs)) return;
+      linkUrl = abs;
+      linkText = cleanText($(a).text());
+    });
+
+    if (!linkUrl) return;
+
+    const nonEmptyCells = [];
+    $cells.each((__, cell) => {
+      const txt = cleanText($(cell).text());
+      if (txt) nonEmptyCells.push(txt);
+    });
+
+    const meaningfulCellCandidates = nonEmptyCells
+      .filter((txt) => !parseDateFromText(txt))
+      .filter((txt) => !isInvalidKonsultimeTitle(txt, municipalityKey))
+      .filter((txt) => !looksLikeUrlText(txt))
+      .sort((a, b) => b.length - a.length);
+
+    const bestCellTitle = meaningfulCellCandidates[0] || "";
+    const filenameFallback = titleFromFilename(filenameFromUrl(linkUrl));
+    const filenameCandidate = isInvalidKonsultimeTitle(filenameFallback, municipalityKey)
+      ? ""
+      : filenameFallback;
+    const secondaryCellCandidate = meaningfulCellCandidates.find((txt) => txt !== bestCellTitle) || "";
+
+    const tableEl = $row.closest("table");
+    const captionText = cleanText(tableEl.find("caption").first().text());
+    let headingNearby = captionText;
+    if (!headingNearby && tableEl.length) {
+      const previousHeading = tableEl
+        .prevAll("h1, h2, h3, h4, .wp-block-heading, .elementor-heading-title")
+        .first();
+      headingNearby = cleanText(previousHeading.text());
+    }
+    const rowDateCandidate = nonEmptyCells.map((txt) => parseDateFromText(txt)).find((x) => !!x) || "";
+    const headingWithDateRaw = headingNearby
+      ? cleanText(`${headingNearby}${rowDateCandidate ? ` ${rowDateCandidate}` : ""}`)
+      : "";
+    const headingWithDate = isInvalidKonsultimeTitle(headingWithDateRaw, municipalityKey)
+      ? ""
+      : headingWithDateRaw;
+    const rowTextCandidate = isInvalidKonsultimeTitle(rowText, municipalityKey) ? "" : rowText;
+    const linkTextCandidate = isInvalidKonsultimeTitle(linkText, municipalityKey) ? "" : linkText;
+
+    const title =
+      bestCellTitle ||
+      filenameCandidate ||
+      secondaryCellCandidate ||
+      headingWithDate ||
+      rowTextCandidate ||
+      linkTextCandidate ||
+      "";
+    if (!title) return;
+    const publishedDate =
+      nonEmptyCells.map((txt) => parseDateFromText(txt)).find((x) => !!x) ||
+      parseDateFromText(title) ||
+      parseDateFromText(linkUrl);
+
+    const looksLikeMixed = looksLikeKonsultimeMixed({
+      title,
+      url: linkUrl,
+      context: `${rowText} ${pageContext}`,
+    });
+
+    if (!looksLikeMixed && !looksLikeDoc(linkUrl)) return;
+
+    const item = buildItemWithOptions({
+      baseUrl,
+      linkUrl,
+      titleText: title,
+      sourcePageUrl: baseUrl,
+      publishedDate,
+    });
+    if (!item) return;
+    if (isInvalidKonsultimeTitle(item.title, municipalityKey)) return;
+    out.push(item);
+  });
+
+  return out;
+}
+
+function extractKonsultimePostLinksFromListing({ baseUrl, html, maxPosts = 20 }) {
+  const $ = cheerio.load(html || "");
+  const seen = new Set();
+  const out = [];
+
+  const selectors = [
+    "article a[href]",
+    ".entry-title a[href]",
+    ".post-title a[href]",
+    ".elementor-post__title a[href]",
+    ".elementor-widget-posts a[href]",
+    ".elementor-widget-loop-grid a[href]",
+    ".news-list a[href]",
+    ".blog-list a[href]",
+    "h2 a[href]",
+    "h3 a[href]",
+    "li a[href]",
+  ];
+
+  function addCandidate(href, title) {
+    const abs = makeAbsolute(baseUrl, href);
+    if (!abs) return;
+    if (!isProbablySameSite(baseUrl, abs)) return;
+    const low = abs.toLowerCase();
+    if (seen.has(low)) return;
+    if (isAssetLikeUrl(low) || looksLikeDoc(low)) return;
+    if (/(\/category\/|\/tag\/|\?s=|\/feed\/|\/author\/|\/wp-json\/)/i.test(low)) return;
+
+    const cleanTitle = cleanText(title);
+    const titleOrUrlMatches = looksLikeKonsultimeMixed({
+      title: cleanTitle,
+      url: abs,
+      context: "",
+    });
+    if (!titleOrUrlMatches) return;
+    seen.add(low);
+    out.push({ url: abs, title: cleanTitle });
+  }
+
+  for (const selector of selectors) {
+    $(selector).each((_, el) => {
+      if (out.length >= maxPosts) return;
+      addCandidate($(el).attr("href"), $(el).text());
+    });
+    if (out.length >= maxPosts) break;
+  }
+
+  return out.slice(0, maxPosts);
+}
+
+function buildKonsultimeHtmlItemFromPost({
+  postUrl,
+  html,
+  listingUrl = null,
+  listingTitle = "",
+  listingHeading = "",
+  municipalityKey = "",
+}) {
+  if (!isProbablySameSite(listingUrl || postUrl, postUrl)) return null;
+  const $ = cheerio.load(html || "");
+  const rawPageTitle =
+    cleanText($("h1").first().text()) ||
+    cleanText($(".entry-title").first().text()) ||
+    cleanText($("title").first().text());
+  const headingCandidate = buildHeadingWithDateFallback({
+    heading: listingHeading,
+    publishedDate: extractLikelyDateFromHtml(html),
+    sourceUrl: postUrl,
+  });
+  const urlSlugCandidate = titleFromUrlSlug(postUrl);
+  const titleCandidates = [
+    rawPageTitle,
+    cleanText(listingTitle),
+    headingCandidate,
+    urlSlugCandidate,
+  ];
+  const title =
+    titleCandidates.find((candidate) => !isInvalidKonsultimeTitle(candidate, municipalityKey)) || "";
+  if (!title) return null;
+  const postTextSample = cleanText($("main, article, .entry-content, .post-content").first().text()).slice(
+    0,
+    600
+  );
+  if (!looksLikeKonsultimeMixed({ title, url: postUrl, context: postTextSample })) return null;
+
+  const publishedDate =
+    extractLikelyDateFromHtml(html) || parseDateFromText(title) || parseDateFromText(postUrl);
+
+  return buildItemWithOptions({
+    baseUrl: postUrl,
+    linkUrl: postUrl,
+    titleText: title,
+    sourcePageUrl: listingUrl || postUrl,
+    publishedDate,
+  });
 }
 
 // Candidate post link discovery (kept, but safer)
@@ -381,26 +786,75 @@ function looksLikePreferredPostDoc(url) {
   );
 }
 
-function pickBestDocumentFromPost({ postUrl, html }) {
-  const allDocs = extractDocLinksFromHtml({ baseUrl: postUrl, html, pageTitleFallback: "" });
+function pickBestDocumentFromPost({ postUrl, html, sourcePageUrl = null }) {
+  const allDocs = extractDocLinksFromHtml({
+    baseUrl: postUrl,
+    html,
+    pageTitleFallback: "",
+    sourcePageUrl: sourcePageUrl || postUrl,
+  });
   if (!allDocs.length) return null;
 
   const preferred = allDocs.find((it) => looksLikePreferredPostDoc(it.source_url));
   return preferred || allDocs[0];
 }
 
-function findNextPageUrl({ baseUrl, html }) {
+function findNextPageUrl({ baseUrl, html, visitedPages = new Set() }) {
   const $ = cheerio.load(html);
 
   const relNext = $('link[rel="next"]').attr("href");
-  if (relNext) return makeAbsolute(baseUrl, relNext);
+  if (relNext) {
+    const abs = makeAbsolute(baseUrl, relNext);
+    if (abs && !visitedPages.has(abs) && isProbablySameSite(baseUrl, abs)) return abs;
+  }
 
   const aNext =
     $("a.next.page-numbers").attr("href") ||
     $("a.next").attr("href") ||
     $('a[rel="next"]').attr("href");
 
-  if (aNext) return makeAbsolute(baseUrl, aNext);
+  if (aNext) {
+    const abs = makeAbsolute(baseUrl, aNext);
+    if (abs && !visitedPages.has(abs) && isProbablySameSite(baseUrl, abs)) return abs;
+  }
+
+  let currentPageNum = null;
+  const currentPageText =
+    $(".page-numbers.current").first().text() ||
+    $(".pagination .current").first().text() ||
+    $(".current.page-numbers").first().text();
+  const parsedCurrent = Number.parseInt(String(currentPageText || "").trim(), 10);
+  if (Number.isFinite(parsedCurrent) && parsedCurrent > 0) currentPageNum = parsedCurrent;
+
+  let fallbackUrl = null;
+  let bestForward = null;
+  let bestForwardNum = Number.POSITIVE_INFINITY;
+  $("a.page-numbers[href], .pagination a[href], .nav-links a[href]").each((_, el) => {
+    const href = $(el).attr("href");
+    const abs = makeAbsolute(baseUrl, href);
+    if (!abs) return;
+    if (!isProbablySameSite(baseUrl, abs)) return;
+    if (visitedPages.has(abs)) return;
+
+    const txt = cleanText($(el).text());
+    const pageNum = Number.parseInt(String(txt || "").trim(), 10);
+    if (!fallbackUrl) fallbackUrl = abs;
+
+    if (Number.isFinite(pageNum) && pageNum > 0) {
+      if (currentPageNum === null) {
+        if (pageNum < bestForwardNum) {
+          bestForwardNum = pageNum;
+          bestForward = abs;
+        }
+      } else if (pageNum > currentPageNum && pageNum < bestForwardNum) {
+        bestForwardNum = pageNum;
+        bestForward = abs;
+      }
+    }
+  });
+
+  if (bestForward) return bestForward;
+  if (fallbackUrl) return fallbackUrl;
   return null;
 }
 
@@ -546,51 +1000,112 @@ async function scrapeGenericDocuments({
   }
   const lim = Math.max(1, Math.min(200, Number(limit) || 50));
 
-  const seenDocs = new Set();
+  const seenSourceUrls = new Set();
+  const seenPostUrls = new Set();
+  const visitedListingPages = new Set();
   const items = [];
   const state = { cloudflareRedirectHits: 0 };
   const isVendimeCategory = String(category || "").trim().toLowerCase() === "vendime";
+  const isKonsultimeCategory =
+    String(category || "").trim().toLowerCase() === "konsultime publike";
 
   const maxListingPages = 5;
   let pageUrl = startUrl;
+  let usedUrl = startUrl;
   void year;
-  void municipalityKey;
+  const normalizedMunicipalityKey = normalizeMunicipalityContext(municipalityKey);
   void pageStart;
 
+  function addItemIfUnique(item) {
+    const sourceUrl = String(item?.source_url || "").trim();
+    if (!sourceUrl) return;
+    if (seenSourceUrls.has(sourceUrl)) return;
+    seenSourceUrls.add(sourceUrl);
+    items.push(item);
+  }
+
   for (let page = 1; page <= maxListingPages; page++) {
+    if (!pageUrl || visitedListingPages.has(pageUrl)) break;
+    visitedListingPages.add(pageUrl);
+
     const listingFetch = await fetchHtml(pageUrl, {
       requestTimeoutMs,
       maxCloudflareRedirects,
       state,
     });
+    const listingUrl = listingFetch.final_url || pageUrl;
+    if (page === 1) usedUrl = listingUrl;
     const listingHtml = listingFetch.html;
+    const listingHeading = isKonsultimeCategory ? extractNearbyListingHeading(listingHtml) : "";
 
-    // A) docs directly on listing
-    const direct = extractDocLinksFromHtml({ baseUrl: pageUrl, html: listingHtml });
-    for (const it of direct) {
-      if (!it?.source_url) continue;
-      if (seenDocs.has(it.source_url)) continue;
-      seenDocs.add(it.source_url);
-      items.push(it);
+    if (isKonsultimeCategory) {
+      const tableItems = extractKonsultimeTableItems({
+        baseUrl: listingUrl,
+        html: listingHtml,
+        municipalityKey: normalizedMunicipalityKey,
+      });
+      for (const it of tableItems) addItemIfUnique(it);
     }
 
-    // B) follow post pages only if we still don’t have enough
-    if (items.length < lim) {
-      const postLinks = extractCandidatePostLinks({
-        baseUrl: pageUrl,
-        html: listingHtml,
-        maxPosts: lim,
+    const direct = extractDocLinksFromHtml({
+      baseUrl: listingUrl,
+      html: listingHtml,
+      sourcePageUrl: listingUrl,
+    });
+    for (const it of direct) {
+      if (!isKonsultimeCategory) {
+        addItemIfUnique(it);
+        continue;
+      }
+      const refined = refineKonsultimeItemTitle({
+        item: it,
+        municipalityKey: normalizedMunicipalityKey,
+        listingHeading,
       });
-      const needsVendimeFallback = isVendimeCategory && direct.length === 0;
-      const vendimePostLinks = needsVendimeFallback
-        ? extractVendimePostLinksFromListing({ baseUrl: pageUrl, html: listingHtml, maxPosts: lim })
-        : [];
-      const mergedPostLinks = Array.from(new Set([...vendimePostLinks, ...postLinks])).slice(0, lim);
-      
-      for (const postUrl of mergedPostLinks) {
+      if (!refined) continue;
+      addItemIfUnique(refined);
+    }
+
+    if (items.length < lim) {
+      let mergedPostCandidates = [];
+      if (isKonsultimeCategory) {
+        mergedPostCandidates = extractKonsultimePostLinksFromListing({
+          baseUrl: listingUrl,
+          html: listingHtml,
+          maxPosts: lim,
+        });
+      } else {
+        const postLinks = extractCandidatePostLinks({
+          baseUrl: listingUrl,
+          html: listingHtml,
+          maxPosts: lim,
+        }).map((it) => ({ url: it, title: "" }));
+        const needsVendimeFallback = isVendimeCategory && direct.length === 0;
+        const vendimePostLinks = needsVendimeFallback
+          ? extractVendimePostLinksFromListing({
+              baseUrl: listingUrl,
+              html: listingHtml,
+              maxPosts: lim,
+            }).map((it) => ({ url: it, title: "" }))
+          : [];
+        const byUrl = new Map();
+        for (const candidate of [...vendimePostLinks, ...postLinks]) {
+          const key = String(candidate.url || "").trim().toLowerCase();
+          if (!key || byUrl.has(key)) continue;
+          byUrl.set(key, candidate);
+        }
+        mergedPostCandidates = Array.from(byUrl.values()).slice(0, lim);
+      }
+
+      for (const candidate of mergedPostCandidates) {
         if (items.length >= lim) break;
+        const postUrl = String(candidate.url || "").trim();
+        if (!postUrl) continue;
+        if (seenPostUrls.has(postUrl)) continue;
+        seenPostUrls.add(postUrl);
 
         let postHtml;
+        let resolvedPostUrl = postUrl;
         try {
           const postFetch = await fetchHtml(postUrl, {
             requestTimeoutMs,
@@ -598,32 +1113,66 @@ async function scrapeGenericDocuments({
             state,
           });
           postHtml = postFetch.html;
+          resolvedPostUrl = postFetch.final_url || postUrl;
         } catch {
           continue;
         }
 
-        const best = pickBestDocumentFromPost({ postUrl, html: postHtml });
-        if (!best?.source_url) continue;
-        const ok =
-          getHost(url) === getHost(best.source_url) ||
-          isProbablySameSite(url, best.source_url);
-        if (!ok) continue;
+        const best = pickBestDocumentFromPost({
+          postUrl: resolvedPostUrl,
+          html: postHtml,
+          sourcePageUrl: resolvedPostUrl,
+        });
+        if (best?.source_url) {
+          if (
+            isVendimeCategory &&
+            !(
+              getHost(startUrl) === getHost(best.source_url) ||
+              isProbablySameSite(startUrl, best.source_url)
+            )
+          ) {
+            continue;
+          }
+          if (!isKonsultimeCategory) {
+            addItemIfUnique(best);
+            continue;
+          }
+          const refinedBest = refineKonsultimeItemTitle({
+            item: best,
+            municipalityKey: normalizedMunicipalityKey,
+            listingHeading,
+            listingTitle: candidate.title || "",
+          });
+          if (!refinedBest) continue;
+          addItemIfUnique(refinedBest);
+          continue;
+        }
 
-        if (seenDocs.has(best.source_url)) continue;
-        seenDocs.add(best.source_url);
-        items.push(best);
+        if (!isKonsultimeCategory) continue;
+        const htmlItem = buildKonsultimeHtmlItemFromPost({
+          postUrl: resolvedPostUrl,
+          html: postHtml,
+          listingUrl,
+          listingTitle: candidate.title || "",
+          listingHeading,
+          municipalityKey: normalizedMunicipalityKey,
+        });
+        if (htmlItem) addItemIfUnique(htmlItem);
       }
     }
 
     if (items.length >= lim) break;
 
-    // C) pagination
-    const nextUrl = findNextPageUrl({ baseUrl: pageUrl, html: listingHtml });
-    if (!nextUrl || nextUrl === pageUrl) break;
+    const nextUrl = findNextPageUrl({
+      baseUrl: listingUrl,
+      html: listingHtml,
+      visitedPages: visitedListingPages,
+    });
+    if (!nextUrl || nextUrl === pageUrl || visitedListingPages.has(nextUrl)) break;
     pageUrl = nextUrl;
   }
 
-  return { url: startUrl, items: items.slice(0, lim) };
+  return { url: startUrl, usedUrl, items: items.slice(0, lim) };
 }
 
 module.exports = { scrapeGenericDocuments };
