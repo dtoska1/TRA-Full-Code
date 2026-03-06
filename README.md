@@ -137,6 +137,21 @@ This creates `prokurime_records` keyed by `item_id` to store extracted spend met
 
 Extraction is best-effort during Prokurime ingestion for APP `ExportDocument` sources. Non-CSV export responses are logged and skipped without failing the scrape run.
 
+Run migration `020_prokurime_records_schema_align.sql` after `019`:
+
+```powershell
+Get-Content -Raw -Encoding UTF8 .\020_prokurime_records_schema_align.sql | docker exec -i tra_postgres psql -U tra -d tra -v ON_ERROR_STOP=1
+```
+
+This aligns fresh environments with the live `prokurime_records` schema by adding:
+- `cpv_group`
+- `procedure_type`
+- `contracting_authority`
+- `raw_row`
+- `created_at`
+
+`created_at` is backfilled from `extracted_at` when possible and then made `NOT NULL DEFAULT now()`.
+
 ### 5.2.2) Optional admin-only CHECKED reset (only after Dion confirms)
 
 If category flags were enabled too broadly and you want to reset only `Prokurime` and
@@ -295,6 +310,8 @@ Procurement spend dashboard endpoint (`/api/dashboard/prokurime/pie`):
 curl.exe "http://localhost:5050/api/dashboard/prokurime/pie?municipality=tirane&year=2025&top=5"
 curl.exe "http://localhost:5050/api/dashboard/prokurime/pie?municipality=tirane&top=5"
 ```
+
+Local browser origins `http://localhost:3000`, `http://127.0.0.1:3000`, `http://localhost:3001`, and `http://127.0.0.1:3001` are allowed by default for development. After Prokurime spend rows are upserted, the in-memory dashboard cache is cleared so the next dashboard read is fresh immediately.
 
 Dashboard query params:
 - `municipality` required (`name_key` format).

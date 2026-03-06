@@ -46,6 +46,12 @@ const PUBLIC_ORIGINS = String(process.env.PUBLIC_ORIGINS || "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
+const LOCAL_PUBLIC_ORIGINS = new Set([
+  "http://localhost:3000",
+  "http://127.0.0.1:3000",
+  "http://localhost:3001",
+  "http://127.0.0.1:3001",
+]);
 
 if (NODE_ENV === "production" && !ADMIN_TOKEN) {
   console.error("Missing required env var ADMIN_TOKEN in production.");
@@ -62,17 +68,20 @@ if (String(process.env.TRUST_PROXY || "") === "1") {
 // --------------------
 const originAllowlist = new Set(PUBLIC_ORIGINS);
 
+function isAllowedLocalPublicOrigin(origin) {
+  return LOCAL_PUBLIC_ORIGINS.has(String(origin || "").trim().toLowerCase());
+}
+
 app.use(
   cors({
     origin(origin, cb) {
       // Allow non-browser clients (curl, server-to-server) which do not send Origin.
       if (!origin) return cb(null, true);
 
+      if (isAllowedLocalPublicOrigin(origin)) return cb(null, true);
+
       // If no allowlist configured, default to localhost-only in development.
       if (originAllowlist.size === 0) {
-        if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin)) {
-          return cb(null, true);
-        }
         return cb(new Error("CORS blocked: origin not allowed"), false);
       }
 
@@ -1307,6 +1316,7 @@ async function upsertProkurimeRecord({
       sourceExportUrl,
     ]
   );
+  invalidateDashboardProkurimePieCache();
 }
 
 async function upsertRegistryDocumentItem({
@@ -2224,6 +2234,10 @@ function cleanupDashboardProkurimePieCache() {
       dashboardProkurimePieCache.delete(key);
     }
   }
+}
+
+function invalidateDashboardProkurimePieCache() {
+  dashboardProkurimePieCache.clear();
 }
 
 // --------------------
