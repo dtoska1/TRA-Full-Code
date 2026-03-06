@@ -10,6 +10,7 @@ export default [
   {
     ignores: [
       ".next/**",
+      ".next-dev/**",
       "node_modules/**",
       "out/**",
       "dist/**",
