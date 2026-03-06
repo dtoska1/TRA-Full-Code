@@ -649,6 +649,8 @@ async function scrapeProkurimeAppExport({
 module.exports = {
   scrapeProkurimeAppExport,
   buildProkurimeAppDedupKey,
+  parseCsvRecordsStrict,
+  normalizeProcedureId,
   __test: {
     APP_EXPORT_PAGE_URLS,
     discoverYearCsvUrlFromHtml,

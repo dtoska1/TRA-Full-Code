@@ -64,6 +64,20 @@ async function run() {
     "Quoted CSV field parsing failed"
   );
 
+  const semicolonCsv = [
+    "Autoriteti Kontraktor;Vlera e fondit;Monedha",
+    "Bashkia Tirane;1.234,56;ALL",
+  ].join("\n");
+  const parsedSemicolon = prokTest.parseCsvRecordsStrict(semicolonCsv);
+  assert(
+    parsedSemicolon.records.length === 1,
+    `Expected 1 semicolon CSV record, got ${parsedSemicolon.records.length}`
+  );
+  assert(
+    parsedSemicolon.records[0]["Vlera e fondit"] === "1.234,56",
+    "Semicolon delimiter CSV parsing failed"
+  );
+
   const fakeFetch = async (url) => {
     const normalizedUrl = String(url || "");
     if (

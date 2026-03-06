@@ -31,6 +31,8 @@ const { scrapeVendimeAl } = require("./scrapers/vendimeAl");
 const {
   scrapeProkurimeAppExport,
   buildProkurimeAppDedupKey,
+  parseCsvRecordsStrict,
+  normalizeProcedureId,
 } = require("./scrapers/prokurimeAppExport");
 
 console.log("LOADED INDEX.JS FROM:", __filename);
@@ -211,6 +213,35 @@ const KONSULTIME_FALLBACK_KEYWORDS = [
   "degjes",
 ];
 const KONSULTIME_FALLBACK_MAX_LINKS = 6;
+const PROKURIME_AMOUNT_HEADER_KEYWORDS = [
+  "vlera",
+  "vlera e fondit",
+  "fondi limit",
+  "fondi limit i kontrates",
+  "contract value",
+  "estimated value",
+  "value",
+  "cmimi",
+];
+const PROKURIME_CURRENCY_HEADER_KEYWORDS = ["monedha", "currency", "valuta"];
+const PROKURIME_SUPPLIER_HEADER_KEYWORDS = [
+  "operatori ekonomik",
+  "fituesi",
+  "furnitori",
+  "supplier",
+  "economic operator",
+  "contractor",
+];
+const PROKURIME_CPV_HEADER_KEYWORDS = ["cpv", "cpv code", "kodi cpv", "kode cpv"];
+const PROKURIME_PROCEDURE_HEADER_KEYWORDS = [
+  "numri i references",
+  "nr reference",
+  "reference number",
+  "procedure id",
+  "id procedure",
+];
+const PROKURIME_ALL_CURRENCY_SQL_PREDICATE =
+  "COALESCE(NULLIF(btrim(upper(pr.amount_currency)), ''), 'ALL') = 'ALL'";
 const KONSULTIME_NO_YEAR_KEEP_RE =
   /\b(konsultim[a-z]*|konsultime[a-z]*|degjes[a-z]*|njoftim[a-z]*|proces\s*verbal[a-z]*|takim[a-z]*|projekt[a-z]*|draft[a-z]*|plan[a-z]*|strategji[a-z]*|buxhet[a-z]*|pba|pyetesor[a-z]*|anket[a-z]*|koment[a-z]*)\b/;
 const SEARCH_INDEX_UID = String(process.env.MEILI_PUBLIC_INDEX_UID || "public_items_v1").trim();
@@ -422,6 +453,13 @@ function parseYear(value, fallback) {
   if (value === undefined || value === null || value === "") return fallback;
   const n = Number(String(value).trim());
   if (!Number.isInteger(n) || n < 2000 || n > 2100) return null;
+  return n;
+}
+
+function parseTopInt(value, fallback, min = 1, max = 20) {
+  if (value === undefined || value === null || value === "") return fallback;
+  const n = Number(String(value).trim());
+  if (!Number.isInteger(n) || n < min || n > max) return null;
   return n;
 }
 
@@ -958,6 +996,319 @@ function dedupKeyRegistryDocumentV1({
   return `registry|v1|${municipalityId}|${categoryPart}|${datePart}|t:${titleHash}|s:${sourceHash}`;
 }
 
+function normalizeHeaderToken(value) {
+  return String(value || "")
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function getRecordValueByHeaderKeywords(record, headerKeywords) {
+  if (!record || typeof record !== "object") return "";
+  const headerEntries = Object.keys(record).map((raw) => ({
+    raw,
+    normalized: normalizeHeaderToken(raw),
+  }));
+  for (const keyword of headerKeywords) {
+    const keywordNormalized = normalizeHeaderToken(keyword);
+    if (!keywordNormalized) continue;
+    for (const entry of headerEntries) {
+      if (!entry.normalized || !entry.normalized.includes(keywordNormalized)) continue;
+      const value = String(record[entry.raw] || "").trim();
+      if (value) return value;
+    }
+  }
+  return "";
+}
+
+function parseAppExportDocumentUrl(sourceUrl) {
+  const out = {
+    isExportDocument: false,
+    exportUrl: null,
+    procedureHint: null,
+  };
+  const raw = String(sourceUrl || "").trim();
+  if (!raw) return out;
+
+  let parsed = null;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return out;
+  }
+
+  const host = String(parsed.hostname || "").toLowerCase();
+  const pathName = String(parsed.pathname || "").toLowerCase();
+  if (!host.endsWith("app.gov.al") || pathName !== "/getdata/exportdocument") {
+    return out;
+  }
+
+  const hashRaw = String(parsed.hash || "").replace(/^#/, "");
+  let procedureHint = null;
+  if (hashRaw) {
+    const params = new URLSearchParams(hashRaw);
+    procedureHint = params.get("procedure");
+    if (!procedureHint && hashRaw.toLowerCase().startsWith("procedure=")) {
+      procedureHint = hashRaw.slice("procedure=".length);
+    }
+  }
+
+  parsed.hash = "";
+  out.isExportDocument = true;
+  out.exportUrl = parsed.toString();
+  out.procedureHint = normalizeProcedureId(procedureHint || "");
+  return out;
+}
+
+function isLikelyCsvResponse({ contentType, bodyText }) {
+  const contentTypeNormalized = String(contentType || "").toLowerCase();
+  if (contentTypeNormalized.includes("text/html")) return false;
+  if (
+    contentTypeNormalized.includes("text/csv") ||
+    contentTypeNormalized.includes("application/csv") ||
+    contentTypeNormalized.includes("text/plain") ||
+    contentTypeNormalized.includes("application/octet-stream")
+  ) {
+    return true;
+  }
+
+  const head = String(bodyText || "")
+    .slice(0, 200)
+    .trim()
+    .toLowerCase();
+  if (!head) return false;
+  if (head.startsWith("<!doctype html") || head.startsWith("<html")) return false;
+  return true;
+}
+
+function parseAmountValue(raw) {
+  const source = String(raw || "").trim();
+  if (!source) return null;
+  let clean = source.replace(/\s+/g, "").replace(/[^0-9,.\-]/g, "");
+  if (!clean) return null;
+
+  const isNegative = clean.startsWith("-");
+  clean = clean.replace(/-/g, "");
+  if (!clean) return null;
+
+  const lastComma = clean.lastIndexOf(",");
+  const lastDot = clean.lastIndexOf(".");
+  let normalized = clean;
+
+  if (lastComma !== -1 && lastDot !== -1) {
+    const decimalSeparator = lastDot > lastComma ? "." : ",";
+    const thousandsSeparator = decimalSeparator === "." ? "," : ".";
+    normalized = clean.split(thousandsSeparator).join("");
+    if (decimalSeparator === ",") {
+      normalized = normalized.replace(/,/g, ".");
+    }
+  } else if (lastComma !== -1) {
+    const parts = clean.split(",");
+    if (parts.length > 2) {
+      normalized = parts.join("");
+    } else if (parts[1] && parts[1].length > 0 && parts[1].length <= 2) {
+      normalized = `${parts[0]}.${parts[1]}`;
+    } else {
+      normalized = clean.replace(/,/g, "");
+    }
+  } else if (lastDot !== -1) {
+    const parts = clean.split(".");
+    if (parts.length > 2) {
+      normalized = parts.join("");
+    } else if (parts[1] && parts[1].length > 0 && parts[1].length <= 2) {
+      normalized = `${parts[0]}.${parts[1]}`;
+    } else {
+      normalized = clean.replace(/\./g, "");
+    }
+  }
+
+  const numericValue = Number.parseFloat(`${isNegative ? "-" : ""}${normalized}`);
+  if (!Number.isFinite(numericValue)) return null;
+  return Math.round(numericValue * 100) / 100;
+}
+
+function detectAmountCurrency({ rawAmount, rawCurrency }) {
+  const combined = `${String(rawCurrency || "")} ${String(rawAmount || "")}`.toLowerCase();
+  if (!combined) return null;
+
+  if (combined.includes("eur") || combined.includes("€")) return "EUR";
+  if (combined.includes("usd") || combined.includes("$")) return "USD";
+  if (combined.includes("all") || combined.includes("lek")) return "ALL";
+  return null;
+}
+
+function normalizeAmountCurrencyForStorage(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toUpperCase();
+  if (normalized === "ALL" || normalized === "EUR" || normalized === "USD") {
+    return normalized;
+  }
+  return "ALL";
+}
+
+function findBestExportRowForItem({ records, procedureHint, procedureId }) {
+  if (!Array.isArray(records) || !records.length) return null;
+  const normalizedHints = [
+    normalizeProcedureId(procedureHint || ""),
+    normalizeProcedureId(procedureId || ""),
+  ].filter(Boolean);
+  if (!normalizedHints.length) return null;
+
+  for (const record of records) {
+    const procedureRef = getRecordValueByHeaderKeywords(record, PROKURIME_PROCEDURE_HEADER_KEYWORDS);
+    const normalizedProcedureRef = normalizeProcedureId(procedureRef || "");
+    if (!normalizedProcedureRef) continue;
+    if (!normalizedHints.includes(normalizedProcedureRef)) continue;
+    return { record, procedureRef };
+  }
+  return null;
+}
+
+async function fetchProkurimeExportPayload(exportUrl) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SCRAPE_REQUEST_TIMEOUT_MS);
+  try {
+    const response = await fetch(exportUrl, {
+      method: "GET",
+      redirect: "follow",
+      signal: controller.signal,
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        Accept: "text/csv, application/csv, text/plain;q=0.9, */*;q=0.8",
+      },
+    });
+    const contentType = String(response.headers.get("content-type") || "").trim();
+    const bodyText = await response.text();
+    if (!response.ok) {
+      return {
+        kind: "error",
+        reason: `HTTP ${response.status}`,
+      };
+    }
+    if (!isLikelyCsvResponse({ contentType, bodyText })) {
+      return {
+        kind: "non_csv",
+        reason: contentType || "unexpected_content_type",
+      };
+    }
+    const parsed = parseCsvRecordsStrict(bodyText);
+    return {
+      kind: "csv",
+      records: parsed.records || [],
+      headers: parsed.headers || [],
+      sampleLogged: false,
+    };
+  } catch (err) {
+    if (err?.name === "AbortError") {
+      return {
+        kind: "error",
+        reason: `timeout ${SCRAPE_REQUEST_TIMEOUT_MS}ms`,
+      };
+    }
+    return {
+      kind: "error",
+      reason: safePublicErrorMessage(err, "fetch_failed"),
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function truncateLogJson(value, maxLen = 260) {
+  const raw = typeof value === "string" ? value : JSON.stringify(value || {});
+  return String(raw || "").replace(/[\r\n\t]+/g, " ").slice(0, maxLen);
+}
+
+function extractProkurimeRecordFields({ record, fallbackProcedureRef }) {
+  const amountRaw = getRecordValueByHeaderKeywords(record, PROKURIME_AMOUNT_HEADER_KEYWORDS);
+  const currencyRaw = getRecordValueByHeaderKeywords(record, PROKURIME_CURRENCY_HEADER_KEYWORDS);
+  const supplierName = getRecordValueByHeaderKeywords(record, PROKURIME_SUPPLIER_HEADER_KEYWORDS) || null;
+  const cpvCode = getRecordValueByHeaderKeywords(record, PROKURIME_CPV_HEADER_KEYWORDS) || null;
+  const procedureRef =
+    getRecordValueByHeaderKeywords(record, PROKURIME_PROCEDURE_HEADER_KEYWORDS) ||
+    fallbackProcedureRef ||
+    null;
+  return {
+    amountValue: parseAmountValue(amountRaw),
+    amountCurrency: normalizeAmountCurrencyForStorage(
+      detectAmountCurrency({ rawAmount: amountRaw, rawCurrency: currencyRaw })
+    ),
+    supplierName,
+    cpvCode,
+    procedureRef,
+  };
+}
+
+async function findItemIdByDedupKey({ municipalityId, dedupKey }) {
+  const found = await pool.query(
+    `
+    SELECT id
+    FROM items
+    WHERE municipality_id = $1
+      AND category = 'Prokurime'
+      AND dedup_key = $2
+    LIMIT 1
+    `,
+    [municipalityId, dedupKey]
+  );
+  return found.rowCount ? found.rows[0].id : null;
+}
+
+async function upsertProkurimeRecord({
+  itemId,
+  municipalityId,
+  amountValue,
+  amountCurrency,
+  supplierName,
+  cpvCode,
+  procedureRef,
+  sourceExportUrl,
+}) {
+  const normalizedAmountCurrency = normalizeAmountCurrencyForStorage(amountCurrency);
+  await pool.query(
+    `
+    INSERT INTO prokurime_records (
+      item_id,
+      municipality_id,
+      amount_value,
+      amount_currency,
+      supplier_name,
+      cpv_code,
+      procedure_ref,
+      source_export_url,
+      extracted_at,
+      updated_at
+    )
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), now())
+    ON CONFLICT (item_id)
+    DO UPDATE SET
+      municipality_id = EXCLUDED.municipality_id,
+      amount_value = EXCLUDED.amount_value,
+      amount_currency = EXCLUDED.amount_currency,
+      supplier_name = EXCLUDED.supplier_name,
+      cpv_code = EXCLUDED.cpv_code,
+      procedure_ref = EXCLUDED.procedure_ref,
+      source_export_url = EXCLUDED.source_export_url,
+      extracted_at = now(),
+      updated_at = now()
+    `,
+    [
+      itemId,
+      municipalityId,
+      amountValue,
+      normalizedAmountCurrency,
+      supplierName,
+      cpvCode,
+      procedureRef,
+      sourceExportUrl,
+    ]
+  );
+}
+
 async function upsertRegistryDocumentItem({
   municipalityId,
   category,
@@ -1254,6 +1605,31 @@ async function getMunicipalityNameKeyById(municipalityId) {
     [municipalityId]
   );
   return r.rowCount ? r.rows[0].name_key : null;
+}
+
+async function resolveDashboardYear({ municipalityId, requestedYear }) {
+  if (Number.isInteger(requestedYear)) return requestedYear;
+  const latestYearResult = await pool.query(
+    `
+    SELECT
+      EXTRACT(YEAR FROM i.published_date)::int AS year_value
+    FROM prokurime_records pr
+    JOIN items i ON i.id = pr.item_id
+    WHERE i.municipality_id = $1
+      AND i.category = 'Prokurime'
+      AND i.published_date IS NOT NULL
+      AND pr.amount_value IS NOT NULL
+      AND ${PROKURIME_ALL_CURRENCY_SQL_PREDICATE}
+    ORDER BY year_value DESC
+    LIMIT 1
+    `,
+    [municipalityId]
+  );
+  if (latestYearResult.rowCount) {
+    const latestYear = Number(latestYearResult.rows[0]?.year_value);
+    if (Number.isInteger(latestYear)) return latestYear;
+  }
+  return 2026;
 }
 
 async function getMunicipalityMatchContext(municipalityId) {
@@ -1838,6 +2214,18 @@ async function getTiranaId() {
   return _cachedTiranaId;
 }
 
+const DASHBOARD_PROKURIME_CACHE_TTL_MS = 60 * 1000;
+const dashboardProkurimePieCache = new Map();
+
+function cleanupDashboardProkurimePieCache() {
+  const now = Date.now();
+  for (const [key, cacheEntry] of dashboardProkurimePieCache.entries()) {
+    if (!cacheEntry || cacheEntry.expiresAt <= now) {
+      dashboardProkurimePieCache.delete(key);
+    }
+  }
+}
+
 // --------------------
 // Routes
 // --------------------
@@ -1849,6 +2237,7 @@ app.get("/", (req, res) => {
       "/health",
       "/api/debug/db-encoding",
       "/api/municipalities",
+      "/api/dashboard/prokurime/pie",
       "/api/admin/coverage",
       "/api/admin/items/manual",
       "/api/admin/files/:id",
@@ -1935,6 +2324,125 @@ app.get("/api/municipalities", async (req, res) => {
       ok: false,
       error: "db_error",
       message: safePublicErrorMessage(err, "Database operation failed"),
+    });
+  }
+});
+
+app.get("/api/dashboard/prokurime/pie", async (req, res) => {
+  try {
+    const municipalityRaw = req.query.municipality;
+    const municipality = String(municipalityRaw || "")
+      .trim()
+      .toLowerCase();
+    if (!municipality || !/^[a-z0-9-]{1,64}$/.test(municipality)) {
+      return badRequest(
+        res,
+        "Invalid municipality. Use lowercase slug format (a-z, 0-9, hyphen), max 64 chars."
+      );
+    }
+
+    const yearProvided =
+      req.query.year !== undefined && req.query.year !== null && String(req.query.year).trim() !== "";
+    const requestedYear = parseYear(req.query.year, null);
+    if (yearProvided && requestedYear === null) {
+      return badRequest(res, "Invalid year. year must be an integer between 2000 and 2100.");
+    }
+
+    const top = parseTopInt(req.query.top, 5, 1, 20);
+    if (top === null) {
+      return badRequest(res, "Invalid top. top must be an integer between 1 and 20.");
+    }
+
+    const municipalityId = await getMunicipalityId({ municipality });
+    if (!municipalityId) {
+      return badRequest(res, "Invalid municipality (name_key/name_sq) or municipality_id");
+    }
+    const municipalityNameKey = (await getMunicipalityNameKeyById(municipalityId)) || municipality;
+    const year = await resolveDashboardYear({ municipalityId, requestedYear });
+
+    cleanupDashboardProkurimePieCache();
+    const cacheKey = `${municipalityNameKey}|${year}|${top}|all`;
+    const now = Date.now();
+    const cached = dashboardProkurimePieCache.get(cacheKey);
+    if (cached && cached.expiresAt > now) {
+      return res.json(cached.payload);
+    }
+
+    const periodStart = `${year}-01-01`;
+    const periodEnd = `${year + 1}-01-01`;
+    const groupedResult = await pool.query(
+      `
+      SELECT
+        COALESCE(NULLIF(btrim(pr.cpv_code), ''), 'UNKNOWN') AS cpv_code,
+        SUM(pr.amount_value)::numeric AS amount,
+        COUNT(*)::int AS count
+      FROM prokurime_records pr
+      JOIN items i ON i.id = pr.item_id
+      WHERE i.municipality_id = $1
+        AND i.category = 'Prokurime'
+        AND i.published_date >= $2::date
+        AND i.published_date < $3::date
+        AND pr.amount_value IS NOT NULL
+        AND ${PROKURIME_ALL_CURRENCY_SQL_PREDICATE}
+      GROUP BY COALESCE(NULLIF(btrim(pr.cpv_code), ''), 'UNKNOWN')
+      ORDER BY SUM(pr.amount_value) DESC, cpv_code ASC
+      `,
+      [municipalityId, periodStart, periodEnd]
+    );
+
+    const rows = groupedResult.rows.map((row) => {
+      const amountCents = Math.round(Number(row.amount || 0) * 100);
+      return {
+        cpv_code: String(row.cpv_code || "UNKNOWN"),
+        label: String(row.cpv_code || "UNKNOWN"),
+        amountCents: Number.isFinite(amountCents) ? amountCents : 0,
+        count: Number(row.count || 0),
+      };
+    });
+
+    const totalAmountCents = rows.reduce((sum, row) => sum + row.amountCents, 0);
+    const totalCount = rows.reduce((sum, row) => sum + row.count, 0);
+    const topRows = rows.slice(0, top);
+    const topAmountCents = topRows.reduce((sum, row) => sum + row.amountCents, 0);
+    const topCount = topRows.reduce((sum, row) => sum + row.count, 0);
+    const otherAmountCents = Math.max(0, totalAmountCents - topAmountCents);
+    const otherCount = Math.max(0, totalCount - topCount);
+
+    const buckets = [
+      ...topRows.map((row) => ({
+        cpv_code: row.cpv_code,
+        label: row.label,
+        amount: row.amountCents / 100,
+        count: row.count,
+      })),
+      {
+        cpv_code: "other",
+        label: "Other",
+        amount: otherAmountCents / 100,
+        count: otherCount,
+      },
+    ];
+
+    const payload = {
+      ok: true,
+      municipality: municipalityNameKey,
+      year,
+      currency: "ALL",
+      total_amount: totalAmountCents / 100,
+      buckets,
+    };
+
+    dashboardProkurimePieCache.set(cacheKey, {
+      expiresAt: now + DASHBOARD_PROKURIME_CACHE_TTL_MS,
+      payload,
+    });
+
+    return res.json(payload);
+  } catch (err) {
+    return res.status(500).json({
+      ok: false,
+      error: "server_error",
+      message: safePublicErrorMessage(err, "Server operation failed"),
     });
   }
 });
@@ -3348,6 +3856,7 @@ app.post("/api/scrape/run", async (req, res) => {
           let parsed_kept = 0;
           let sample_kept_title = null;
           const keptDedupKeysByMunicipality = new Map();
+          const prokurimeExportCache = new Map();
           const skipped_no_municipality_match = Number(
             baselineResult.meta?.skipped_no_municipality_match || 0
           );
@@ -3435,6 +3944,80 @@ app.post("/api/scrape/run", async (req, res) => {
               defaultStatus,
               systemUserId,
             });
+
+            try {
+              const itemId = await findItemIdByDedupKey({
+                municipalityId: rowMunicipalityId,
+                dedupKey,
+              });
+              if (!itemId) {
+                console.warn(
+                  `[prokurime_records] skip error item_not_found=true municipality_id=${rowMunicipalityId}`
+                );
+              } else {
+                const parsedExportSource = parseAppExportDocumentUrl(sourceUrl);
+                if (parsedExportSource.isExportDocument) {
+                  let exportPayload = prokurimeExportCache.get(parsedExportSource.exportUrl);
+                  if (!exportPayload) {
+                    exportPayload = await fetchProkurimeExportPayload(parsedExportSource.exportUrl);
+                    prokurimeExportCache.set(parsedExportSource.exportUrl, exportPayload);
+                    if (exportPayload.kind === "non_csv") {
+                      console.warn(
+                        `[prokurime_records] skip non_csv export_url=${parsedExportSource.exportUrl} reason=${exportPayload.reason}`
+                      );
+                    } else if (exportPayload.kind === "error") {
+                      console.warn(
+                        `[prokurime_records] skip error export_url=${parsedExportSource.exportUrl} err=${exportPayload.reason}`
+                      );
+                    }
+                  }
+
+                  if (exportPayload.kind === "csv") {
+                    if (!exportPayload.sampleLogged && exportPayload.records.length > 0) {
+                      console.log(
+                        `[prokurime_records] sample_row export_url=${parsedExportSource.exportUrl} row=${truncateLogJson(
+                          exportPayload.records[0]
+                        )}`
+                      );
+                      exportPayload.sampleLogged = true;
+                    }
+
+                    const bestRow = findBestExportRowForItem({
+                      records: exportPayload.records,
+                      procedureHint: parsedExportSource.procedureHint,
+                      procedureId: it.procedure_id,
+                    });
+                    const extractedFields = extractProkurimeRecordFields({
+                      record: bestRow?.record || {},
+                      fallbackProcedureRef:
+                        bestRow?.procedureRef ||
+                        it.procedure_id ||
+                        parsedExportSource.procedureHint ||
+                        null,
+                    });
+
+                    await upsertProkurimeRecord({
+                      itemId,
+                      municipalityId: rowMunicipalityId,
+                      amountValue: extractedFields.amountValue,
+                      amountCurrency: extractedFields.amountCurrency,
+                      supplierName: extractedFields.supplierName,
+                      cpvCode: extractedFields.cpvCode,
+                      procedureRef: extractedFields.procedureRef,
+                      sourceExportUrl: parsedExportSource.exportUrl,
+                    });
+                  }
+                }
+              }
+            } catch (prokurimeRecordErr) {
+              const parsedExportSource = parseAppExportDocumentUrl(sourceUrl);
+              console.warn(
+                `[prokurime_records] skip error export_url=${parsedExportSource.exportUrl || "-"} err=${safePublicErrorMessage(
+                  prokurimeRecordErr,
+                  "prokurime_records_upsert_failed"
+                )}`
+              );
+            }
 
             if (action === "inserted") {
               inserted += 1;

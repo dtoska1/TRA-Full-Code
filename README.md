@@ -120,7 +120,24 @@ This adds per-category flags on `source_registry`:
 
 No automatic backfill is performed by migration.
 
-### 5.2.1) Optional admin-only CHECKED reset (only after Dion confirms)
+### 5.2.1) Prokurime spend records (APP export extraction v1)
+
+Run migration `019_prokurime_records.sql`:
+
+```powershell
+Get-Content -Raw -Encoding UTF8 .\019_prokurime_records.sql | docker exec -i tra_postgres psql -U tra -d tra -v ON_ERROR_STOP=1
+```
+
+This creates `prokurime_records` keyed by `item_id` to store extracted spend metadata:
+- `amount_value`
+- `amount_currency`
+- `supplier_name`
+- `cpv_code`
+- `procedure_ref`
+
+Extraction is best-effort during Prokurime ingestion for APP `ExportDocument` sources. Non-CSV export responses are logged and skipped without failing the scrape run.
+
+### 5.2.2) Optional admin-only CHECKED reset (only after Dion confirms)
 
 If category flags were enabled too broadly and you want to reset only `Prokurime` and
 `Konsultime publike` (while leaving `Vendime` unchanged), run:
@@ -271,6 +288,21 @@ Search query params:
 - `page` optional (default `1`).
 - `limit` optional (default `20`, max `50`).
 - `municipality`, `category`, `year`, `sort` optional filters.
+
+Procurement spend dashboard endpoint (`/api/dashboard/prokurime/pie`):
+
+```powershell
+curl.exe "http://localhost:5050/api/dashboard/prokurime/pie?municipality=tirane&year=2025&top=5"
+curl.exe "http://localhost:5050/api/dashboard/prokurime/pie?municipality=tirane&top=5"
+```
+
+Dashboard query params:
+- `municipality` required (`name_key` format).
+- `year` optional. If omitted, backend uses latest available year for that municipality; fallback is `2026`.
+- `top` optional (default `5`, allowed `1..20`).
+- Amounts are aggregated with normalized currency handling:
+  `COALESCE(NULLIF(btrim(upper(amount_currency)), ''), 'ALL') = 'ALL'`
+  (empty/NULL currency is treated as `ALL`).
 
 Search response item fields include:
 - `id`, `title`, `summary`
@@ -480,7 +512,7 @@ Batch script (sequential, with guardrails + progress file):
 
 - Script: `backend/scripts/run_all_vendime_batch.js`
 - Progress file: `backend/tmp/run_all_vendime_progress.json`
-- Defaults: `--year=2024 --limit=50 --batch=10 --sleep_ms=800 --resume=true --stop_on_error=true`
+- Defaults: `--year=2024 --limit=50 --batch=10 --sleep_ms=800 --resume=true --stop_on_error=false`
 
 PowerShell example (from repo root):
 
@@ -493,8 +525,10 @@ Resume behavior:
 
 - If a municipality is already `ok` in progress for the same `year+limit`, it is skipped.
 - If a municipality is `error`, it is retried on the next run.
+- If a municipality returns cooldown/429, it is recorded as `retry_later` and the batch continues.
+- CLI supports both forms: `--year=2026` and `--year 2026` (same for `--stop_on_error`, `--sleep_ms`, `--limit`).
 - Set `--resume=false` to ignore previous progress and run all municipalities again.
-- If `--stop_on_error=true`, the script stops immediately on first failure and keeps progress on disk.
+- If `--stop_on_error=true`, the script stops immediately on first hard failure (non-cooldown/non-429) and keeps progress on disk.
 
 Vendime nationwide runner (single `next_offset` resume pointer):
 
@@ -554,6 +588,11 @@ Registry category batch runner (Vendime / Prokurime / Konsultime):
 cd backend
 npm run run:batch:registry -- --category="Konsultime publike" --year=2025 --limit=20 --batch=5
 ```
+
+Notes:
+- CLI supports both forms: `--year=2026` and `--year 2026` (same for `--stop_on_error`, `--sleep_ms`, `--limit`).
+- Default `stop_on_error` is `false`.
+- Cooldown/429 responses are recorded as `retry_later` and the batch continues.
 
 Shortcut for Konsultime:
 

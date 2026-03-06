@@ -1,5 +1,6 @@
 import Link from "next/link";
 import MunicipalityFeedCta from "./components/municipality-feed-cta";
+import ProkurimeSpendCard from "./components/prokurime-spend-card";
 
 const SEARCH_CATEGORIES = ["Vendime", "Prokurime", "Konsultime publike"] as const;
 const SORT_OPTIONS = ["newest", "oldest"] as const;
@@ -186,6 +187,8 @@ export default async function HomePage({
 
   return (
     <main className="mx-auto flex w-full max-w-5xl flex-col gap-4 p-4 pb-10 sm:p-6">
+      <ProkurimeSpendCard municipalities={municipalities} />
+
       <section className="w-full rounded-3xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
         <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
           Transparency Radar Albania

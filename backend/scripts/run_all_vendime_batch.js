@@ -11,7 +11,7 @@ const DEFAULTS = {
   batch: 10,
   sleep_ms: 800,
   resume: true,
-  stop_on_error: true,
+  stop_on_error: false,
 };
 
 const API_BASE = 'http://localhost:5050';
@@ -21,15 +21,23 @@ const RATE_LIMIT_MAX_RETRIES = 2;
 
 function parseArgs(argv) {
   const out = {};
-  for (const token of argv.slice(2)) {
+  const tokens = argv.slice(2);
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = String(tokens[i] || '');
     if (!token.startsWith('--')) continue;
     const body = token.slice(2);
     const eqIdx = body.indexOf('=');
-    if (eqIdx === -1) {
-      out[body] = true;
+    if (eqIdx !== -1) {
+      out[body.slice(0, eqIdx)] = body.slice(eqIdx + 1);
       continue;
     }
-    out[body.slice(0, eqIdx)] = body.slice(eqIdx + 1);
+    const next = tokens[i + 1];
+    if (next !== undefined && !String(next).startsWith('--')) {
+      out[body] = String(next);
+      i += 1;
+      continue;
+    }
+    out[body] = true;
   }
   return out;
 }
@@ -187,6 +195,27 @@ function shouldSkipOnResume(previous, year, limit) {
   return Number(previous.year) === Number(year) && Number(previous.limit) === Number(limit);
 }
 
+function classifyRetryLater({ status, data }) {
+  const httpStatus = Number(status);
+  const errorCode = String(data?.error || '').trim().toLowerCase();
+  const message = String(data?.message || '').trim().toLowerCase();
+  const lastErrorTypeRaw = String(data?.last_error_type || '').trim().toUpperCase();
+  const isCooldown = errorCode === 'cooldown' || message.includes('source is in cooldown');
+  const isRateLimited =
+    httpStatus === 429 ||
+    lastErrorTypeRaw === 'HTTP_429' ||
+    message.includes('too many scrape requests');
+
+  if (!isCooldown && !isRateLimited) return null;
+
+  return {
+    reason: isCooldown ? 'cooldown' : 'rate_limited',
+    http_status: Number.isFinite(httpStatus) ? httpStatus : null,
+    last_error_type: lastErrorTypeRaw || (isCooldown ? 'COOLDOWN' : 'HTTP_429'),
+    cooldown_until_utc: data?.cooldown_until_utc ? String(data.cooldown_until_utc) : null,
+  };
+}
+
 async function run() {
   const args = parseArgs(process.argv);
 
@@ -197,6 +226,15 @@ async function run() {
   const resume = toBool(args.resume, DEFAULTS.resume);
   const stopOnError = toBool(args.stop_on_error, DEFAULTS.stop_on_error);
   const baseUrl = ensureLocalhostUrl(API_BASE);
+  const resolvedConfig = {
+    year,
+    limit,
+    batch: batchSize,
+    sleep_ms: sleepMs,
+    resume,
+    stop_on_error: stopOnError,
+    base_url: baseUrl,
+  };
 
   const adminToken = String(process.env.ADMIN_TOKEN || '').trim();
   if (!adminToken) {
@@ -222,11 +260,13 @@ async function run() {
   const totalBatches = Math.ceil(total / batchSize);
   let okCount = 0;
   let errorCount = 0;
+  let retryLaterCount = 0;
   let skippedCount = 0;
   let stoppedMunicipality = null;
 
   console.log(`Running Vendime batch ingestion`);
   console.log(`- Target: ${baseUrl}`);
+  console.log(`- resolved_config=${JSON.stringify(resolvedConfig)}`);
   console.log(`- Municipalities: ${total}`);
   console.log(`- year=${year} limit=${limit} batch=${batchSize} sleep_ms=${sleepMs}`);
   console.log(`- resume=${resume} stop_on_error=${stopOnError}`);
@@ -261,25 +301,51 @@ async function run() {
 
       if (!res.ok || !data?.ok) {
         const msg = sanitizeErrorMessage(data?.message || `HTTP ${res.status}`);
-        progress.municipalities[municipalityKey] = {
-          municipality_id: municipalityId,
-          municipality_name: municipalityName,
-          status: 'error',
-          last_run_utc: nowIso(),
-          year,
-          limit,
-          parsed_rows_total: Number(data?.parsed_rows_total ?? 0),
-          parsed_rows_kept: Number(data?.parsed_rows_kept ?? 0),
-          inserted: Number(data?.inserted ?? 0),
-          published_updated: Number(data?.published_updated ?? 0),
-          error_message: msg,
-        };
-        writeProgressFile(PROGRESS_PATH, progress);
-        errorCount += 1;
-        console.log(`[ERROR] ${municipalityKey} (${res.status}) ${msg}`);
-        if (stopOnError) {
-          stoppedMunicipality = municipalityKey;
-          break;
+        const retryLater = classifyRetryLater({ status: res.status, data });
+        if (retryLater) {
+          progress.municipalities[municipalityKey] = {
+            municipality_id: municipalityId,
+            municipality_name: municipalityName,
+            status: 'retry_later',
+            last_run_utc: nowIso(),
+            year,
+            limit,
+            parsed_rows_total: Number(data?.parsed_rows_total ?? 0),
+            parsed_rows_kept: Number(data?.parsed_rows_kept ?? 0),
+            inserted: Number(data?.inserted ?? 0),
+            published_updated: Number(data?.published_updated ?? 0),
+            http_status: retryLater.http_status,
+            last_error_type: retryLater.last_error_type,
+            cooldown_until_utc: retryLater.cooldown_until_utc,
+            retry_later_reason: retryLater.reason,
+            error_message: msg,
+          };
+          writeProgressFile(PROGRESS_PATH, progress);
+          retryLaterCount += 1;
+          console.log(
+            `[RETRY_LATER] ${municipalityKey} (${res.status}) reason=${retryLater.reason} ${msg}`
+          );
+        } else {
+          progress.municipalities[municipalityKey] = {
+            municipality_id: municipalityId,
+            municipality_name: municipalityName,
+            status: 'error',
+            last_run_utc: nowIso(),
+            year,
+            limit,
+            parsed_rows_total: Number(data?.parsed_rows_total ?? 0),
+            parsed_rows_kept: Number(data?.parsed_rows_kept ?? 0),
+            inserted: Number(data?.inserted ?? 0),
+            published_updated: Number(data?.published_updated ?? 0),
+            error_message: msg,
+          };
+          writeProgressFile(PROGRESS_PATH, progress);
+          errorCount += 1;
+          console.log(`[ERROR] ${municipalityKey} (${res.status}) ${msg}`);
+          if (stopOnError) {
+            stoppedMunicipality = municipalityKey;
+            break;
+          }
         }
       } else {
         const entry = {
@@ -335,13 +401,16 @@ async function run() {
   progress.last_run.summary = {
     ok: okCount,
     error: errorCount,
+    retry_later: retryLaterCount,
     skipped: skippedCount,
     total,
   };
   writeProgressFile(PROGRESS_PATH, progress);
 
   console.log('\nDone.');
-  console.log(`- ok=${okCount} error=${errorCount} skipped=${skippedCount} total=${total}`);
+  console.log(
+    `- ok=${okCount} error=${errorCount} retry_later=${retryLaterCount} skipped=${skippedCount} total=${total}`
+  );
   console.log(`- progress_file=${PROGRESS_PATH}`);
 
   if (stoppedMunicipality) {
