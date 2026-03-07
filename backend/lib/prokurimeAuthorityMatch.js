@@ -1,5 +1,14 @@
 "use strict";
 
+const LOCAL_OPERATOR_PREFIXES = [
+  "NDERMARRJA E SHERBIMEVE PUBLIKE",
+  "NDERMARRJA E PASURIVE PUBLIKE",
+  "NDERMARRJA E PASTRIMIT",
+  "AGJENCIA E SHERBIMEVE PUBLIKE",
+  "AGJENCIA E SHERBIMEVE PUBLIKE RURALE",
+  "NDERMARRJA RRUGA",
+];
+
 function normalizeText(value) {
   return String(value || "")
     .normalize("NFKD")
@@ -41,6 +50,13 @@ function containsTermSequence(text, termVariant) {
   return re.test(text);
 }
 
+function hasTermSuffix(text, termVariant) {
+  if (!text || !termVariant) return false;
+  const escaped = escapeRegex(termVariant);
+  const re = new RegExp(`(?:^|\\s)${escaped}$`);
+  return re.test(text);
+}
+
 function buildMunicipalityTermSet({ nameKey, nameSq, aliasKeys = [] }) {
   const terms = new Set();
 
@@ -65,6 +81,8 @@ function matchAuthorityToMunicipality({ authority, municipalityTerms }) {
   if (!normalizedAuthority) {
     return {
       matched: false,
+      match_mode: null,
+      matched_prefix: null,
       reason: "missing_authority",
       matched_term: null,
     };
@@ -75,6 +93,8 @@ function matchAuthorityToMunicipality({ authority, municipalityTerms }) {
   if (!hasBashkiaMarker && !hasMunicipalityOfMarker) {
     return {
       matched: false,
+      match_mode: null,
+      matched_prefix: null,
       reason: "missing_municipality_marker",
       matched_term: null,
     };
@@ -106,6 +126,8 @@ function matchAuthorityToMunicipality({ authority, municipalityTerms }) {
     if (matchedByBashkia || matchedByMunicipalityOf) {
       return {
         matched: true,
+        match_mode: "primary",
+        matched_prefix: null,
         reason: matchedByBashkia ? "matched_bashkia" : "matched_municipality_of",
         matched_term: normalizedTerm,
       };
@@ -114,13 +136,125 @@ function matchAuthorityToMunicipality({ authority, municipalityTerms }) {
 
   return {
     matched: false,
+    match_mode: null,
+    matched_prefix: null,
     reason: "unclear_authority_name",
     matched_term: null,
   };
 }
 
+function getAllowedLocalOperatorPrefix(normalizedAuthority) {
+  if (!normalizedAuthority) return null;
+  for (const prefix of LOCAL_OPERATOR_PREFIXES) {
+    if (
+      normalizedAuthority === prefix ||
+      normalizedAuthority.startsWith(`${prefix} `)
+    ) {
+      return prefix;
+    }
+  }
+  return null;
+}
+
+function matchAuthorityToMunicipalityAcrossContexts({ authority, municipalityContexts }) {
+  const contexts = Array.isArray(municipalityContexts) ? municipalityContexts : [];
+  const normalizedAuthority = normalizeText(authority);
+  if (!normalizedAuthority) {
+    return {
+      matched: false,
+      municipalityContext: null,
+      match_mode: null,
+      matched_prefix: null,
+      reason: "missing_authority",
+      matched_term: null,
+    };
+  }
+
+  const hasBashkiaMarker = /\bBASHKIA\b/.test(normalizedAuthority);
+  const hasMunicipalityOfMarker = /\bMUNICIPALITY\s+OF\b/.test(normalizedAuthority);
+
+  for (const municipalityContext of contexts) {
+    const primaryMatch = matchAuthorityToMunicipality({
+      authority,
+      municipalityTerms: municipalityContext?.municipalityTerms,
+    });
+    if (!primaryMatch.matched) continue;
+    return {
+      ...primaryMatch,
+      municipalityContext,
+    };
+  }
+
+  const matchedPrefix = getAllowedLocalOperatorPrefix(normalizedAuthority);
+  if (!matchedPrefix) {
+    return {
+      matched: false,
+      municipalityContext: null,
+      match_mode: null,
+      matched_prefix: null,
+      reason:
+        hasBashkiaMarker || hasMunicipalityOfMarker
+          ? "unclear_authority_name"
+          : "missing_municipality_marker",
+      matched_term: null,
+    };
+  }
+
+  const fallbackCandidates = [];
+  for (const municipalityContext of contexts) {
+    const terms = Array.isArray(municipalityContext?.municipalityTerms)
+      ? municipalityContext.municipalityTerms
+      : [];
+    let matchedTerm = null;
+    for (const term of terms) {
+      const normalizedTerm = normalizeText(term);
+      if (!normalizedTerm) continue;
+      if (!hasTermSuffix(normalizedAuthority, normalizedTerm)) continue;
+      matchedTerm = normalizedTerm;
+      break;
+    }
+    if (!matchedTerm) continue;
+    fallbackCandidates.push({
+      municipalityContext,
+      matchedTerm,
+    });
+    if (fallbackCandidates.length > 1) {
+      return {
+        matched: false,
+        municipalityContext: null,
+        match_mode: null,
+        matched_prefix: null,
+        reason: "ambiguous_fallback_municipality_suffix",
+        matched_term: null,
+      };
+    }
+  }
+
+  if (!fallbackCandidates.length) {
+    return {
+      matched: false,
+      municipalityContext: null,
+      match_mode: null,
+      matched_prefix: null,
+      reason: "fallback_suffix_not_unique",
+      matched_term: null,
+    };
+  }
+
+  return {
+    matched: true,
+    municipalityContext: fallbackCandidates[0].municipalityContext,
+    match_mode: "fallback_local_operator",
+    matched_prefix: matchedPrefix,
+    reason: "matched_fallback_local_operator",
+    matched_term: fallbackCandidates[0].matchedTerm,
+  };
+}
+
 module.exports = {
+  LOCAL_OPERATOR_PREFIXES,
   buildMunicipalityTermSet,
   matchAuthorityToMunicipality,
+  matchAuthorityToMunicipalityAcrossContexts,
   normalizeText,
 };

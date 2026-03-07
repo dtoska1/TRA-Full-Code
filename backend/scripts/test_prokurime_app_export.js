@@ -36,6 +36,12 @@ async function run() {
   const sqHtml = fixtureText("app_export_page_sq.html");
   const enHtml = fixtureText("app_export_page_en.html");
   const csvRaw = fixtureText("app_export_sample_2025.csv");
+  const fallbackCsvRaw = [
+    "Autoriteti_kontraktues,Reference No,Object of Contract,Date of Publication,Details",
+    "Bashkia Tirane,REF-PRIMARY-01-01-2024,Primary municipality row,01.01.2024,https://www.app.gov.al/details/primary",
+    "Ndermarrja e Sherbimeve Publike Berat,REF-FALLBACK-02-01-2024,Fallback municipality row,02.01.2024,https://www.app.gov.al/details/fallback",
+    "Drejtoria e Policise Qarkut Korce,REF-SHOULD-SKIP-03-01-2024,Unsafe suffix-only row,03.01.2024,https://www.app.gov.al/details/skip",
+  ].join("\n");
 
   const sqCsvUrl = prokTest.discoverYearCsvUrlFromHtml({
     html: sqHtml,
@@ -99,6 +105,9 @@ async function run() {
     if (normalizedUrl === "https://www.app.gov.al/GetData/ExportDocument?year=2025") {
       return makeFakeResponse(200, normalizedUrl, `\uFEFF${csvRaw}`);
     }
+    if (normalizedUrl === "https://www.app.gov.al/GetData/ExportDocument?year=2024") {
+      return makeFakeResponse(200, normalizedUrl, `\uFEFF${fallbackCsvRaw}`);
+    }
 
     return makeFakeResponse(404, normalizedUrl, "not found");
   };
@@ -117,6 +126,14 @@ async function run() {
 
   assert(result.meta.rows_total === 3, `rows_total mismatch: ${result.meta.rows_total}`);
   assert(result.meta.rows_matched === 2, `rows_matched mismatch: ${result.meta.rows_matched}`);
+  assert(
+    result.meta.rows_matched_primary === 2,
+    `rows_matched_primary mismatch: ${result.meta.rows_matched_primary}`
+  );
+  assert(
+    result.meta.rows_matched_fallback_local_operator === 0,
+    `rows_matched_fallback_local_operator mismatch: ${result.meta.rows_matched_fallback_local_operator}`
+  );
   assert(
     result.meta.skipped_no_municipality_match === 1,
     `skipped_no_municipality_match mismatch: ${result.meta.skipped_no_municipality_match}`
@@ -157,6 +174,62 @@ async function run() {
   assert(
     dedupFromRefA !== dedupFromRefB,
     `Different procedure_id values must produce different dedup keys (${dedupFromRefA} vs ${dedupFromRefB})`
+  );
+
+  const fallbackResult = await scrapeProkurimeAppExport({
+    year: 2024,
+    limit: 50,
+    municipalityContexts: [
+      {
+        nameKey: "tirane",
+        nameSq: "Tirane",
+        aliasKeys: ["tirana"],
+      },
+      {
+        nameKey: "berat",
+        nameSq: "Berat",
+        aliasKeys: [],
+      },
+      {
+        nameKey: "korce",
+        nameSq: "Korce",
+        aliasKeys: [],
+      },
+    ],
+    fetchImpl: fakeFetch,
+    requestTimeoutMs: 5000,
+  });
+  assert(
+    fallbackResult.meta.rows_total === 3,
+    `fallback rows_total mismatch: ${fallbackResult.meta.rows_total}`
+  );
+  assert(
+    fallbackResult.meta.rows_matched === 2,
+    `fallback rows_matched mismatch: ${fallbackResult.meta.rows_matched}`
+  );
+  assert(
+    fallbackResult.meta.rows_matched_primary === 1,
+    `fallback rows_matched_primary mismatch: ${fallbackResult.meta.rows_matched_primary}`
+  );
+  assert(
+    fallbackResult.meta.rows_matched_fallback_local_operator === 1,
+    `fallback rows_matched_fallback_local_operator mismatch: ${fallbackResult.meta.rows_matched_fallback_local_operator}`
+  );
+  assert(
+    fallbackResult.meta.skipped_no_municipality_match === 1,
+    `fallback skipped_no_municipality_match mismatch: ${fallbackResult.meta.skipped_no_municipality_match}`
+  );
+  assert(
+    fallbackResult.items.length === 2,
+    `Expected 2 fallback scenario items, got ${fallbackResult.items.length}`
+  );
+  assert(
+    fallbackResult.items.some((item) => item.municipality_name_key === "berat"),
+    "Expected fallback-local-operator match for Berat"
+  );
+  assert(
+    !fallbackResult.items.some((item) => item.municipality_name_key === "korce"),
+    "Non-whitelisted suffix-only authority should not match"
   );
 
   console.log("Prokurime APP export parser tests passed.");

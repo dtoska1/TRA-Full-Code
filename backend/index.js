@@ -3841,6 +3841,10 @@ app.post("/api/scrape/run", async (req, res) => {
             export_csv_url: baselineResult.meta?.export_csv_url || null,
             parsed_rows_total: Number(baselineResult.meta?.rows_total || baselineResult.items.length),
             rows_matched: Number(baselineResult.meta?.rows_matched || 0),
+            rows_matched_primary: Number(baselineResult.meta?.rows_matched_primary || 0),
+            rows_matched_fallback_local_operator: Number(
+              baselineResult.meta?.rows_matched_fallback_local_operator || 0
+            ),
             skipped_no_municipality_match: Number(
               baselineResult.meta?.skipped_no_municipality_match || 0
             ),
@@ -3852,6 +3856,10 @@ app.post("/api/scrape/run", async (req, res) => {
             skipped_wrong_year: 0,
           };
           const matched_rows_total = Number(baselineSummary.rows_matched || 0);
+          const matched_rows_primary = Number(baselineSummary.rows_matched_primary || 0);
+          const matched_rows_fallback_local_operator = Number(
+            baselineSummary.rows_matched_fallback_local_operator || 0
+          );
           const nextOffset = isNationwideProkurime
             ? (baselineResult.meta?.next_offset ?? null)
             : null;
@@ -4089,6 +4097,8 @@ app.post("/api/scrape/run", async (req, res) => {
             scraped_from: baselineSummary.used_url || baselineSummary.export_csv_url || null,
             parsed_rows_total: baselineSummary.parsed_rows_total,
             matched_rows_total,
+            matched_rows_primary,
+            matched_rows_fallback_local_operator,
             parsed_rows_kept: parsed_kept,
             force_publish: forcePublish,
             should_publish: isNationwideProkurime ? null : shouldPublish,

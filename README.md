@@ -636,7 +636,10 @@ Prokurime v1 scope:
 - Baseline source is APP annual export CSV discovered from APP export pages:
   - `https://www.app.gov.al/eksportimi-i-procedurave-te-publikuara/`
   - fallback: `https://www.app.gov.al/export-public-calls/`
-- Municipality matching is conservative (`Bashkia <X>` / `Municipality of <X>`). Unclear rows are skipped and counted in `skipped_no_municipality_match`.
+- Municipality matching is conservative. Primary matching still requires explicit `Bashkia <X>` / `Municipality of <X>`.
+- A narrow fallback also accepts a small allowlist of explicit local-service operators (`Ndermarrja e Sherbimeve Publike`, `Ndermarrja e Pasurive Publike`, `Ndermarrja e Pastrimit`, `Agjencia e Sherbimeve Publike`, `Agjencia e Sherbimeve Publike Rurale`, `Ndermarrja Rruga`) only when the authority ends with exactly one municipality term.
+- Broader suffix-only matching is intentionally not used because it would create obvious false positives for police, military, courts, universities, and other regional/state entities.
+- Unclear rows are skipped and counted in `skipped_no_municipality_match`.
 
 ### Finish Prokurime baseline (nationwide, resumable)
 
@@ -694,6 +697,8 @@ Expected response counters for year-filtered runs:
 - `skipped_missing_date`
 - `skipped_wrong_year`
 - `skipped_no_municipality_match` (Prokurime)
+- `matched_rows_primary` (Prokurime)
+- `matched_rows_fallback_local_operator` (Prokurime)
 
 Category-scoped CHECKED backfill script (operator-run, explicit scope):
 

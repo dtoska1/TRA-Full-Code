@@ -6,8 +6,9 @@ const path = require("path");
 const cheerio = require("cheerio");
 const { parse: parseCsvSync } = require("csv-parse/sync");
 const {
+  LOCAL_OPERATOR_PREFIXES,
   buildMunicipalityTermSet,
-  matchAuthorityToMunicipality,
+  matchAuthorityToMunicipalityAcrossContexts,
   normalizeText,
 } = require("../lib/prokurimeAuthorityMatch");
 
@@ -549,28 +550,30 @@ async function scrapeProkurimeAppExport({
 
   const items = [];
   let rowsMatched = 0;
+  let rowsMatchedPrimary = 0;
+  let rowsMatchedFallbackLocalOperator = 0;
   let skippedNoMunicipalityMatch = 0;
 
   for (let idx = rowWindowStart; idx < rowWindowEnd; idx += 1) {
     const record = parsed.records[idx];
     const headers = getHeaderEntries(record);
     const authority = getValueByHeaderKeywords(record, headers, AUTHORITY_HEADER_KEYWORDS);
-    let matchedContext = null;
-    for (const contextConfig of contextConfigs) {
-      const authorityMatch = matchAuthorityToMunicipality({
-        authority,
-        municipalityTerms: contextConfig.municipalityTerms,
-      });
-      if (!authorityMatch.matched) continue;
-      matchedContext = contextConfig;
-      break;
-    }
+    const authorityMatch = matchAuthorityToMunicipalityAcrossContexts({
+      authority,
+      municipalityContexts: contextConfigs,
+    });
+    const matchedContext = authorityMatch.municipalityContext;
 
     if (!matchedContext) {
       skippedNoMunicipalityMatch += 1;
       continue;
     }
     rowsMatched += 1;
+    if (authorityMatch.match_mode === "fallback_local_operator") {
+      rowsMatchedFallbackLocalOperator += 1;
+    } else {
+      rowsMatchedPrimary += 1;
+    }
 
     if (!rowWindowMode && lim !== null && items.length >= lim) continue;
 
@@ -629,6 +632,10 @@ async function scrapeProkurimeAppExport({
     items.push(item);
   }
 
+  console.log(
+    `[prokurime_app_export] year=${year} rows_total=${totalRows} rows_matched=${rowsMatched} rows_matched_primary=${rowsMatchedPrimary} rows_matched_fallback_local_operator=${rowsMatchedFallbackLocalOperator} skipped_no_municipality_match=${skippedNoMunicipalityMatch} export_csv_url=${discovered.exportCsvUrl}`
+  );
+
   return {
     url: discovered.sourcePageUrl,
     items,
@@ -637,6 +644,8 @@ async function scrapeProkurimeAppExport({
       export_csv_url: discovered.exportCsvUrl,
       rows_total: totalRows,
       rows_matched: rowsMatched,
+      rows_matched_primary: rowsMatchedPrimary,
+      rows_matched_fallback_local_operator: rowsMatchedFallbackLocalOperator,
       skipped_no_municipality_match: skippedNoMunicipalityMatch,
       row_window_start: rowWindowStart,
       row_window_end: rowWindowEnd,
@@ -653,6 +662,7 @@ module.exports = {
   normalizeProcedureId,
   __test: {
     APP_EXPORT_PAGE_URLS,
+    LOCAL_OPERATOR_PREFIXES,
     discoverYearCsvUrlFromHtml,
     parseCsvRecordsStrict,
     parseKnownDate,
