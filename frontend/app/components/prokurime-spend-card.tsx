@@ -61,6 +61,15 @@ function stripCpvCodes(value: string): string {
     .replace(/,\s*$/, "");
 }
 
+function hexToRgba(hex: string, alpha: number): string {
+  const normalized = String(hex || "").replace("#", "").trim();
+  if (normalized.length !== 6) return `rgba(15, 23, 42, ${alpha})`;
+  const red = Number.parseInt(normalized.slice(0, 2), 16);
+  const green = Number.parseInt(normalized.slice(2, 4), 16);
+  const blue = Number.parseInt(normalized.slice(4, 6), 16);
+  return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+}
+
 function formatBucketDisplay(
   bucket: ProkurimeBucket
 ): { title: string; secondary: string; isOther: boolean } {
@@ -78,6 +87,13 @@ function formatBucketDisplay(
 
   const cpvCodes = Array.from(new Set(`${rawCode} ${rawLabel}`.match(new RegExp(CPV_CODE_RE.source, "gi")) || []));
   const preferredLabel = rawLabel && rawLabel !== rawCode ? rawLabel : rawCode || rawLabel;
+  if (!preferredLabel || preferredLabel.toUpperCase() === "UNKNOWN") {
+    return {
+      title: "E panjohur",
+      secondary: cpvCodes.length ? `Kodi CPV: ${cpvCodes.join(", ")}` : "Kodi CPV mungon",
+      isOther: false,
+    };
+  }
   const cleanedLabel = stripCpvCodes(preferredLabel);
   const title = cleanedLabel || preferredLabel || "Uncategorized";
 
@@ -91,7 +107,7 @@ function formatBucketDisplay(
 
   return {
     title,
-    secondary: cpvCodes.length ? `Kodi CPV: ${cpvCodes.join(", ")}` : "CPV unavailable",
+    secondary: cpvCodes.length ? `Kodi CPV: ${cpvCodes.join(", ")}` : "Kodi CPV mungon",
     isOther: false,
   };
 }
@@ -129,6 +145,7 @@ export default function ProkurimeSpendCard({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [mounted, setMounted] = useState(false);
+  const [activeIndex, setActiveIndex] = useState<number | null>(null);
 
   useEffect(() => {
     setMounted(true);
@@ -192,16 +209,19 @@ export default function ProkurimeSpendCard({
   const buckets = useMemo(() => {
     return Array.isArray(data?.buckets) ? data.buckets : [];
   }, [data?.buckets]);
+  const listRows = useMemo(() => {
+    if (!hasSpendData) return [];
+    return buckets.filter((bucket) => Number(bucket.amount || 0) > 0);
+  }, [buckets, hasSpendData]);
 
   const pieSlices = useMemo(() => {
-    const visibleBuckets = buckets.filter((bucket) => Number(bucket.amount || 0) > 0);
-    if (!hasSpendData || !visibleBuckets.length) return [];
+    if (!listRows.length) return [];
 
     const radius = 72;
     const circumference = 2 * Math.PI * radius;
     let offset = 0;
 
-    return visibleBuckets.map((bucket, index) => {
+    return listRows.map((bucket, index) => {
       const amount = Number(bucket.amount || 0);
       const fraction = totalAmount > 0 ? amount / totalAmount : 0;
       const length = Math.max(0, fraction * circumference);
@@ -215,9 +235,7 @@ export default function ProkurimeSpendCard({
         dashoffset: -currentOffset,
       };
     });
-  }, [buckets, hasSpendData, totalAmount]);
-
-  const listRows = hasSpendData ? buckets : [];
+  }, [listRows, totalAmount]);
 
   return (
     <section className="w-full rounded-3xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
@@ -291,7 +309,7 @@ export default function ProkurimeSpendCard({
               <div className="mx-auto">
                 <svg viewBox="0 0 180 180" width="180" height="180" role="img" aria-label="Top categories pie chart">
                   <circle cx="90" cy="90" r="72" fill="none" stroke="#e2e8f0" strokeWidth="18" />
-                  {pieSlices.map((slice) => (
+                  {pieSlices.map((slice, index) => (
                     <circle
                       key={slice.key}
                       cx="90"
@@ -304,6 +322,14 @@ export default function ProkurimeSpendCard({
                       strokeDashoffset={slice.dashoffset}
                       transform="rotate(-90 90 90)"
                       strokeLinecap="butt"
+                      onMouseEnter={() => setActiveIndex(index)}
+                      onMouseLeave={() => setActiveIndex(null)}
+                      style={{
+                        cursor: "pointer",
+                        opacity: activeIndex === null || activeIndex === index ? 1 : 0.4,
+                        strokeWidth: activeIndex === index ? 22 : 18,
+                        transition: "opacity 160ms ease, stroke-width 160ms ease",
+                      }}
                     />
                   ))}
                 </svg>
@@ -320,10 +346,32 @@ export default function ProkurimeSpendCard({
                 <ul className="mt-3 space-y-2">
                   {listRows.map((bucket, index) => {
                     const display = formatBucketDisplay(bucket);
+                    const color = PIE_COLORS[index % PIE_COLORS.length];
+                    const isActive = activeIndex === index;
                     return (
-                      <li key={`${bucket.cpv_code}-${index}`} className="rounded-lg border border-slate-200 p-3">
+                      <li
+                        key={`${bucket.cpv_code}-${index}`}
+                        className="rounded-lg border border-slate-200 p-3 transition-colors"
+                        onMouseEnter={() => setActiveIndex(index)}
+                        onMouseLeave={() => setActiveIndex(null)}
+                        style={
+                          isActive
+                            ? {
+                                borderColor: color,
+                                backgroundColor: hexToRgba(color, 0.08),
+                              }
+                            : undefined
+                        }
+                      >
                         <div className="flex items-start justify-between gap-3">
-                          <p className="text-sm font-semibold text-slate-800">{display.title}</p>
+                          <div className="flex items-start gap-3">
+                            <span
+                              aria-hidden="true"
+                              className="mt-1 h-2.5 w-2.5 rounded-full"
+                              style={{ backgroundColor: color }}
+                            />
+                            <p className="text-sm font-semibold text-slate-800">{display.title}</p>
+                          </div>
                           <p className="text-right text-sm font-semibold text-slate-900">
                             {formatAmount(bucket.amount)} ALL ({formatShare(bucket.amount, totalAmount)})
                           </p>
