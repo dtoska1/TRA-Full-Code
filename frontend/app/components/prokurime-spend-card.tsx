@@ -41,37 +41,58 @@ function formatAmount(value: number): string {
   }).format(numeric);
 }
 
-function escapeRegExp(value: string): string {
-  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function formatShare(amount: number, totalAmount: number): string {
+  const fraction = totalAmount > 0 ? amount / totalAmount : 0;
+  return new Intl.NumberFormat("sq-AL", {
+    style: "percent",
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 1,
+  }).format(fraction);
 }
 
-function formatBucketDisplay(bucket: ProkurimeBucket): { title: string; subtitle: string } {
+function stripCpvCodes(value: string): string {
+  return String(value || "")
+    .replace(new RegExp(`${CPV_CODE_RE.source}\\s*[-:;,]*\\s*`, "gi"), "")
+    .replace(/\s+,/g, ",")
+    .replace(/,\s*,/g, ", ")
+    .replace(/\s{2,}/g, " ")
+    .trim()
+    .replace(/^,\s*/, "")
+    .replace(/,\s*$/, "");
+}
+
+function formatBucketDisplay(
+  bucket: ProkurimeBucket
+): { title: string; secondary: string; isOther: boolean } {
   const rawCode = String(bucket.cpv_code || "").trim();
   const rawLabel = String(bucket.label || "").trim();
   const isOther = rawCode.toLowerCase() === "other" || rawLabel.toLowerCase() === "other";
 
   if (isOther) {
     return {
-      title: rawLabel || "Other",
-      subtitle: "All remaining categories",
+      title: "Kategori të tjera më të vogla",
+      secondary: rawLabel ? `Etiketa burimore: ${rawLabel}` : "All remaining categories",
+      isOther: true,
     };
   }
 
-  const codeMatch = rawCode.match(CPV_CODE_RE) || rawLabel.match(CPV_CODE_RE);
-  const cpvCode = codeMatch?.[0] || "";
-  let titleCandidate = rawLabel && rawLabel !== rawCode ? rawLabel : rawCode || rawLabel;
+  const cpvCodes = Array.from(new Set(`${rawCode} ${rawLabel}`.match(new RegExp(CPV_CODE_RE.source, "gi")) || []));
+  const preferredLabel = rawLabel && rawLabel !== rawCode ? rawLabel : rawCode || rawLabel;
+  const cleanedLabel = stripCpvCodes(preferredLabel);
+  const title = cleanedLabel || preferredLabel || "Uncategorized";
 
-  if (cpvCode && titleCandidate) {
-    const prefixRe = new RegExp(`^${escapeRegExp(cpvCode)}\\s*[-:;,]*\\s*`, "i");
-    const stripped = titleCandidate.replace(prefixRe, "").trim();
-    if (stripped) {
-      titleCandidate = stripped;
-    }
+  if (preferredLabel && title !== preferredLabel) {
+    return {
+      title,
+      secondary: `Etiketa burimore: ${preferredLabel}`,
+      isOther: false,
+    };
   }
 
   return {
-    title: titleCandidate || rawLabel || rawCode || "Uncategorized",
-    subtitle: cpvCode ? `CPV ${cpvCode}` : "CPV unavailable",
+    title,
+    secondary: cpvCodes.length ? `Kodi CPV: ${cpvCodes.join(", ")}` : "CPV unavailable",
+    isOther: false,
   };
 }
 
@@ -289,7 +310,13 @@ export default function ProkurimeSpendCard({
               </div>
 
               <div>
-                <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-700">Top categories</h3>
+                <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-700">
+                  Ku shkon shpenzimi i prokurimeve
+                </h3>
+                <p className="mt-2 text-sm text-slate-600">
+                  Këto kategori tregojnë ku është përqendruar pjesa më e madhe e vlerës së
+                  prokurimeve për këtë bashki në vitin e zgjedhur.
+                </p>
                 <ul className="mt-3 space-y-2">
                   {listRows.map((bucket, index) => {
                     const display = formatBucketDisplay(bucket);
@@ -297,9 +324,11 @@ export default function ProkurimeSpendCard({
                       <li key={`${bucket.cpv_code}-${index}`} className="rounded-lg border border-slate-200 p-3">
                         <div className="flex items-start justify-between gap-3">
                           <p className="text-sm font-semibold text-slate-800">{display.title}</p>
-                          <p className="text-sm font-semibold text-slate-900">{formatAmount(bucket.amount)} ALL</p>
+                          <p className="text-right text-sm font-semibold text-slate-900">
+                            {formatAmount(bucket.amount)} ALL ({formatShare(bucket.amount, totalAmount)})
+                          </p>
                         </div>
-                        <p className="mt-1 text-xs text-slate-600">{display.subtitle}</p>
+                        <p className="mt-1 text-xs text-slate-500">{display.secondary}</p>
                       </li>
                     );
                   })}
