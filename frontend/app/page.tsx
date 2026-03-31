@@ -232,10 +232,10 @@ export default async function HomePage({
           Transparency Radar Albania
         </p>
         <h1 className="mt-2 text-3xl font-semibold leading-tight text-slate-900">
-          Search Published Municipal Documents
+          Kërko Dokumente Bashkiake
         </h1>
         <p className="mt-3 text-sm text-slate-600">
-          Explore Vendime, Prokurime, and Konsultime across all municipalities.
+          Shfleto Vendime, Prokurime dhe Konsultime nga të gjitha bashkitë.
         </p>
 
         <form method="GET" className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -243,14 +243,14 @@ export default async function HomePage({
             type="text"
             name="q"
             defaultValue={q}
-            placeholder="Search title or summary"
+            placeholder="Kërko titull ose përmbledhje"
             className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
           />
           <input
             type="text"
             name="municipality"
             defaultValue={municipality}
-            placeholder="Municipality slug (e.g. tirane)"
+            placeholder="Bashkia (p.sh. tirane)"
             className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
           />
           <select
@@ -258,7 +258,7 @@ export default async function HomePage({
             defaultValue={category}
             className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
           >
-            <option value="">All categories</option>
+            <option value="">Të gjitha kategoritë</option>
             {SEARCH_CATEGORIES.map((value) => (
               <option key={value} value={value}>
                 {value}
@@ -271,7 +271,7 @@ export default async function HomePage({
             min={2000}
             max={2100}
             defaultValue={year}
-            placeholder="Year (optional)"
+            placeholder="Viti (opsional)"
             className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
           />
           <select
@@ -281,7 +281,7 @@ export default async function HomePage({
           >
             {SORT_OPTIONS.map((value) => (
               <option key={value} value={value}>
-                {value === "newest" ? "Newest first" : "Oldest first"}
+                {value === "newest" ? "Më të rejat" : "Më të vjetrat"}
               </option>
             ))}
           </select>
@@ -289,7 +289,7 @@ export default async function HomePage({
             type="submit"
             className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
           >
-            Search
+            Kërko
           </button>
         </form>
 
@@ -298,7 +298,7 @@ export default async function HomePage({
             href="/status"
             className="inline-flex items-center justify-center rounded-xl border border-slate-300 bg-slate-50 px-5 py-3 text-base font-medium text-slate-700"
           >
-            Public Status
+            Statusi Publik
           </Link>
           {municipalities.length > 0 ? (
             <MunicipalityFeedCta
@@ -311,7 +311,7 @@ export default async function HomePage({
               href="/municipality/tirane?category=Vendime"
               className="inline-flex items-center justify-center rounded-xl border border-slate-300 bg-slate-50 px-5 py-3 text-base font-medium text-slate-700"
             >
-              Municipality Feed
+              Njoftimet e Bashkisë
             </Link>
           )}
           <Link
@@ -357,17 +357,13 @@ export default async function HomePage({
       </section>
 
       <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-        <h2 className="text-xl font-semibold text-slate-900">About / Outcomes</h2>
+        <h2 className="text-xl font-semibold text-slate-900">Rreth Platformës</h2>
         <div className="mt-3 space-y-3 text-sm text-slate-700">
           <p>
-            <strong>Improved access to public information.</strong> Citizens, CSOs, and journalists
-            can use one platform to track municipal decisions, procurement data, and consultations
-            across Albania.
+            <strong>Qasje e përmirësuar në informacionin publik.</strong> Qytetarët, organizatat e shoqërisë civile dhe gazetarët mund të përdorin një platformë të vetme për të ndjekur vendimet bashkiake, të dhënat e prokurimit dhe konsultimet në të gjithë Shqipërinë.
           </p>
           <p>
-            <strong>Digital democracy impact.</strong> Transparency Radar Albania turns fragmented
-            public information into accessible, actionable data that supports participation in local
-            governance and accountability.
+            <strong>Demokraci dixhitale në veprim.</strong> Transparency Radar Albania shndërron informacionin e fragmentuar publik në të dhëna të aksesueshme dhe të veprueshme, që mbështesin pjesëmarrjen në qeverisjen lokale dhe llogaridhënien.
           </p>
         </div>
       </section>
@@ -380,7 +376,7 @@ export default async function HomePage({
 
       {q ? (
         <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <p className="text-sm text-slate-600">Results: {data?.total || 0}</p>
+          <p className="text-sm text-slate-600">Rezultate: {data?.total || 0}</p>
           <ul className="mt-4 space-y-3">
             {(data?.items || []).map((item) => {
               const publicFileUrl = toAbsoluteApiUrl(item.primary_attachment_public_url);
@@ -402,7 +398,7 @@ export default async function HomePage({
                         rel="noreferrer"
                         className="font-medium text-blue-700 underline"
                       >
-                        Source link
+                        Burimi
                       </a>
                     ) : null}
                     {publicFileUrl ? (
@@ -412,7 +408,7 @@ export default async function HomePage({
                         rel="noreferrer"
                         className="font-medium text-emerald-700 underline"
                       >
-                        Public PDF
+                        PDF Publik
                       </a>
                     ) : null}
                   </div>
@@ -421,7 +417,7 @@ export default async function HomePage({
             })}
           </ul>
           {(data?.items || []).length === 0 ? (
-            <p className="mt-4 text-sm text-slate-500">No published results for this query.</p>
+            <p className="mt-4 text-sm text-slate-500">Nuk u gjetën rezultate për këtë kërkim.</p>
           ) : null}
         </section>
       ) : null}

@@ -178,7 +178,7 @@ export default async function MunicipalityPage({
     <main className="mx-auto w-full max-w-5xl p-4 pb-10 sm:p-6">
       <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-          Municipality Feed
+          Njoftimet e Bashkisë
         </p>
         <h1 className="mt-2 text-2xl font-semibold text-slate-900">{municipality}</h1>
         <div className="mt-4 flex flex-wrap gap-2">
@@ -207,7 +207,7 @@ export default async function MunicipalityPage({
         <form method="GET" className="mt-4 flex flex-wrap items-end gap-2">
           <input type="hidden" name="category" value={selectedCategory} />
           <label className="flex flex-col text-xs font-medium text-slate-600">
-            Year
+            Viti
             <input
               type="number"
               name="year"
@@ -219,21 +219,21 @@ export default async function MunicipalityPage({
             />
           </label>
           <label className="flex flex-col text-xs font-medium text-slate-600">
-            Sort
+            Rendit
             <select
               name="sort"
               defaultValue={selectedSort}
               className="mt-1 rounded-lg border border-slate-300 px-2 py-1.5 text-sm text-slate-800"
             >
-              <option value="newest">Newest first</option>
-              <option value="oldest">Oldest first</option>
+              <option value="newest">Më të rejat</option>
+              <option value="oldest">Më të vjetrat</option>
             </select>
           </label>
           <button
             type="submit"
             className="rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white"
           >
-            Apply
+            Apliko
           </button>
           <Link
             href={`/municipality/${encodeURIComponent(municipality)}?category=${encodeURIComponent(
@@ -241,7 +241,7 @@ export default async function MunicipalityPage({
             )}&sort=newest`}
             className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700"
           >
-            Clear year
+            Pastro vitin
           </Link>
         </form>
 
@@ -253,7 +253,7 @@ export default async function MunicipalityPage({
       </section>
 
       <section className="mt-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-        <p className="text-sm text-slate-600">Total: {data?.total || 0}</p>
+        <p className="text-sm text-slate-600">Gjithsej: {data?.total || 0}</p>
         <ul className="mt-4 space-y-3">
           {(data?.items || []).map((item) => {
             const publicFileUrl = toAbsoluteApiUrl(item.primary_attachment_public_url);
@@ -274,7 +274,7 @@ export default async function MunicipalityPage({
                       rel="noreferrer"
                       className="font-medium text-blue-700 underline"
                     >
-                      Source link
+                      Burimi
                     </a>
                   ) : null}
                   {publicFileUrl ? (
@@ -284,7 +284,7 @@ export default async function MunicipalityPage({
                       rel="noreferrer"
                       className="font-medium text-emerald-700 underline"
                     >
-                      Public PDF
+                      PDF Publik
                     </a>
                   ) : null}
                 </div>
@@ -293,7 +293,7 @@ export default async function MunicipalityPage({
           })}
         </ul>
         {(data?.items || []).length === 0 ? (
-          <p className="mt-4 text-sm text-slate-500">No published items for this filter set.</p>
+          <p className="mt-4 text-sm text-slate-500">Nuk ka dokumente të publikuara për këto filtra.</p>
         ) : null}
       </section>
     </main>

@@ -80,7 +80,7 @@ function formatBucketDisplay(
   if (isOther) {
     return {
       title: "Kategori të tjera më të vogla",
-      secondary: rawLabel ? `Etiketa burimore: ${rawLabel}` : "All remaining categories",
+      secondary: rawLabel ? `Etiketa burimore: ${rawLabel}` : "Kategori të tjera",
       isOther: true,
     };
   }
@@ -95,7 +95,7 @@ function formatBucketDisplay(
     };
   }
   const cleanedLabel = stripCpvCodes(preferredLabel);
-  const title = cleanedLabel || preferredLabel || "Uncategorized";
+  const title = cleanedLabel || preferredLabel || "Pa kategori";
 
   if (preferredLabel && title !== preferredLabel) {
     return {
@@ -239,10 +239,10 @@ export default function ProkurimeSpendCard({
 
   return (
     <section className="w-full rounded-3xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
-      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Procurement Spend</p>
+      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Shpenzime Prokurimi</p>
       <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
         <label className="text-xs font-medium uppercase tracking-wide text-slate-600">
-          Municipality
+          Bashkia
           <select
             value={selectedMunicipality}
             onChange={(event) => setSelectedMunicipality(normalizeMunicipality(event.target.value))}
@@ -258,14 +258,14 @@ export default function ProkurimeSpendCard({
         </label>
 
         <label className="text-xs font-medium uppercase tracking-wide text-slate-600">
-          Year
+          Viti
           <select
             value={selectedYear}
             onChange={(event) => setSelectedYear(String(event.target.value || "").trim())}
             className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
             aria-label="Year"
           >
-            <option value="">Latest available</option>
+            <option value="">Viti i fundit</option>
             {yearOptions.map((year) => (
               <option key={year} value={year}>
                 {year}
@@ -281,7 +281,7 @@ export default function ProkurimeSpendCard({
         </p>
       ) : null}
 
-      {loading ? <p className="mt-4 text-sm text-slate-600">Loading procurement spend...</p> : null}
+      {loading ? <p className="mt-4 text-sm text-slate-600">Duke ngarkuar të dhënat...</p> : null}
 
       {!mounted ? (
         <div className="mt-6 animate-pulse" aria-hidden="true">
@@ -299,7 +299,7 @@ export default function ProkurimeSpendCard({
         </div>
       ) : !loading && !error ? (
         <div className="mt-6">
-          <p className="text-sm font-medium text-slate-600">Total procurement spend</p>
+          <p className="text-sm font-medium text-slate-600">Shpenzime totale të prokurimit</p>
           <p className="mt-1 text-4xl font-semibold leading-none text-slate-900">
             {formatAmount(totalAmount)} {data?.currency || "ALL"}
           </p>
@@ -307,7 +307,7 @@ export default function ProkurimeSpendCard({
           {hasSpendData ? (
             <div className="mt-6 grid grid-cols-1 gap-5 lg:grid-cols-[220px_minmax(0,1fr)] lg:items-start">
               <div className="mx-auto">
-                <svg viewBox="0 0 180 180" width="180" height="180" role="img" aria-label="Top categories pie chart">
+                <svg viewBox="0 0 180 180" width="180" height="180" role="img" aria-label="Grafiku i kategorive kryesore">
                   <circle cx="90" cy="90" r="72" fill="none" stroke="#e2e8f0" strokeWidth="18" />
                   {pieSlices.map((slice, index) => (
                     <circle
@@ -385,11 +385,11 @@ export default function ProkurimeSpendCard({
             </div>
           ) : (
             <p className="mt-6 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-              No spend data for this year yet.
+              Nuk ka të dhëna për këtë vit.
             </p>
           )}
 
-          <p className="mt-4 text-xs text-slate-500">Source: app.gov.al</p>
+          <p className="mt-4 text-xs text-slate-500">Burimi: app.gov.al</p>
         </div>
       ) : null}
     </section>
