@@ -50,6 +50,22 @@ type MunicipalitiesResponse = {
   items: MunicipalityApiItem[];
 };
 
+type FeedItem = {
+  id: string;
+  title: string;
+  source_url: string | null;
+  category: string;
+  municipality_name: string | null;
+  published_at: string | null;
+  collected_at: string | null;
+};
+
+type FeedResponse = {
+  ok: boolean;
+  total: number;
+  items: FeedItem[];
+};
+
 function firstValue(params: QueryMap, key: string): string {
   const value = params[key];
   if (Array.isArray(value)) return String(value[0] || "");
@@ -163,6 +179,27 @@ async function getMunicipalityOptions(): Promise<{
   }
 }
 
+async function getLatestItems(): Promise<{ items: FeedItem[]; error: string | null }> {
+  const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:5050";
+  const url = new URL(`${apiBaseUrl.replace(/\/+$/, "")}/api/feed`);
+  url.searchParams.set("limit", "10");
+  url.searchParams.set("sort", "newest");
+
+  try {
+    const response = await fetch(url.toString(), { cache: "no-store" });
+    if (!response.ok) {
+      return { items: [], error: `Feed returned HTTP ${response.status}` };
+    }
+    const json = (await response.json()) as FeedResponse;
+    return { items: json?.items || [], error: null };
+  } catch (error) {
+    return {
+      items: [],
+      error: error instanceof Error ? error.message : "Feed request failed",
+    };
+  }
+}
+
 export default async function HomePage({
   searchParams,
 }: {
@@ -184,6 +221,7 @@ export default async function HomePage({
     sort,
   });
   const { items: municipalities } = await getMunicipalityOptions();
+  const { items: latestItems } = await getLatestItems();
 
   return (
     <main className="mx-auto flex w-full max-w-5xl flex-col gap-4 p-4 pb-10 sm:p-6">
@@ -283,6 +321,39 @@ export default async function HomePage({
             Admin Coverage
           </Link>
         </div>
+      </section>
+
+      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <h2 className="text-xl font-semibold text-slate-900">Të fundit</h2>
+        {latestItems.length === 0 ? (
+          <p className="mt-4 text-sm text-slate-500">Nuk ka të dhëna.</p>
+        ) : (
+          <ul className="mt-4 space-y-3">
+            {latestItems.map((item) => (
+              <li key={item.id} className="rounded-xl border border-slate-200 p-4">
+                <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
+                  <span>{formatDate(item.published_at || item.collected_at)}</span>
+                  <span className="rounded-full bg-slate-100 px-2 py-0.5">{item.category}</span>
+                  <span>{item.municipality_name || ""}</span>
+                </div>
+                <p className="mt-2 text-sm font-semibold text-slate-900">
+                  {item.source_url ? (
+                    <a
+                      href={item.source_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-blue-700 underline"
+                    >
+                      {item.title}
+                    </a>
+                  ) : (
+                    item.title
+                  )}
+                </p>
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
 
       <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
