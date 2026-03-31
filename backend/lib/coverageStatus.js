@@ -101,8 +101,8 @@ async function fetchCoverageSummary(pool, generatedAtUtc = new Date().toISOStrin
         ELSE FALSE
       END AS category_checked,
       r.verification_status,
-      NULL::text AS last_error_type,
-      NULL::timestamptz AS cooldown_until_utc,
+      r.last_error_type,
+      r.cooldown_until_utc,
       r.last_checked_utc,
       COALESCE(i.published_count, 0)::int AS published_count,
       COALESCE(i.draft_count, 0)::int AS draft_count,

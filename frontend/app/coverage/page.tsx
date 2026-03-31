@@ -136,6 +136,8 @@ export default function CoveragePage() {
       inserted?: number;
       updated?: number;
       skipped?: number;
+      skipped_missing_date?: number;
+      skipped_wrong_year?: number;
       next_offset?: number | null;
     };
 
@@ -186,7 +188,7 @@ export default function CoveragePage() {
           ...prev,
           [key]: `Scrape ok: inserted=${Number(result.inserted || 0)} updated=${Number(
             result.updated || 0
-          )} skipped=${Number(result.skipped || 0)} next_offset=${
+          )} skipped=${Number(result.skipped || 0)} skipped_missing_date=${Number(result.skipped_missing_date || 0)} skipped_wrong_year=${Number(result.skipped_wrong_year || 0)} next_offset=${
             result.next_offset === null || result.next_offset === undefined
               ? "-"
               : String(result.next_offset)
@@ -357,6 +359,8 @@ export default function CoveragePage() {
                     </td>
                     <td className="py-2 pr-3 text-slate-700">{checkedLabel}</td>
                     <td className="py-2 pr-3 text-slate-700">{item.verification_status || "-"}</td>
+                    <td className="py-2 pr-3 text-slate-700">{item.last_error_type || "-"}</td>
+                    <td className="py-2 pr-3 text-slate-700">{formatValue(item.cooldown_until_utc)}</td>
                     <td className="py-2 pr-3 text-slate-700">{formatValue(item.last_checked_utc)}</td>
                     <td className="py-2 pr-3 text-slate-700">{item.published_count}</td>
                     <td className="py-2 pr-3 text-slate-700">{item.draft_count}</td>
