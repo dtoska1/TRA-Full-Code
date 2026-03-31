@@ -84,6 +84,7 @@ async function run() {
   const sleepMs = Math.max(0, toInt(args.sleep_ms, 1200));
   const maxRuntimeMs = Math.max(0, toInt(args.max_runtime_ms, 0));
   const resume = toBool(args.resume, true);
+  const forcePublish = toBool(args.force_publish, false);
   const pageStart = Math.max(1, toInt(args.page_start, 1));
   const hasOffset = hasArg(args, "offset");
   const hasStartOffset = hasArg(args, "start_offset");
@@ -150,6 +151,7 @@ async function run() {
     url.searchParams.set("offset", String(offset));
     url.searchParams.set("limit", String(limit));
     url.searchParams.set("page_start", String(pageStart));
+    if (forcePublish) url.searchParams.set("force_publish", "true");
 
     let response;
     try {

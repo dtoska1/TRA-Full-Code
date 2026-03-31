@@ -165,6 +165,7 @@ async function run() {
   const hasExplicitOffset = hasOffset || hasStartOffset;
   const explicitOffset = Math.max(0, toInt(hasOffset ? args.offset : args.start_offset, 0));
   const adminToken = String(process.env.ADMIN_TOKEN || "").trim();
+  const forcePublish = toBool(args.force_publish, false);
 
   if (!adminToken) {
     throw new Error("ADMIN_TOKEN env var is required. Set it in backend/.env before running.");
@@ -274,6 +275,7 @@ async function run() {
     url.searchParams.set("year", String(year));
     url.searchParams.set("offset", String(offset));
     url.searchParams.set("limit", String(limit));
+    if (forcePublish) url.searchParams.set("force_publish", "true");
 
     let shouldContinueOuterLoop = false;
     let successfulPayload = null;

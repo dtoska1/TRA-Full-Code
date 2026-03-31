@@ -87,6 +87,7 @@ async function run() {
   const sleepMs = Math.max(0, toInt(args.sleep_ms, 1500));
   const maxRuntimeMs = Math.max(0, toInt(args.max_runtime_ms, 0));
   const resume = toBool(args.resume, true);
+  const forcePublish = toBool(args.force_publish, false);
   const hasOffset = hasArg(args, "offset");
   const hasStartOffset = hasArg(args, "start_offset");
   const hasExplicitOffset = hasOffset || hasStartOffset;
@@ -161,6 +162,7 @@ async function run() {
     url.searchParams.set("year", String(year));
     url.searchParams.set("offset", String(offset));
     url.searchParams.set("limit", String(limit));
+    if (forcePublish) url.searchParams.set("force_publish", "true");
 
     let response;
     try {
