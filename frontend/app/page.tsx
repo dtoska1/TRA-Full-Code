@@ -1,9 +1,9 @@
 import Link from "next/link";
 import MunicipalityFeedCta from "./components/municipality-feed-cta";
 import ProkurimeSpendCard from "./components/prokurime-spend-card";
+import TeFunditList from "./components/te-fundit-list";
 
 const SEARCH_CATEGORIES = ["Vendime", "Prokurime", "Konsultime publike"] as const;
-const SORT_OPTIONS = ["newest", "oldest"] as const;
 
 type QueryMap = Record<string, string | string[] | undefined>;
 
@@ -188,7 +188,7 @@ async function getMunicipalityOptions(): Promise<{
 async function getLatestItems(): Promise<{ items: FeedItem[]; error: string | null }> {
   const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:5050";
   const url = new URL(`${apiBaseUrl.replace(/\/+$/, "")}/api/feed`);
-  url.searchParams.set("limit", "10");
+  url.searchParams.set("limit", "20");
   url.searchParams.set("sort", "newest");
 
   try {
@@ -219,212 +219,165 @@ export default async function HomePage({
   const sort = normalizeSort(firstValue(params, "sort"));
   const selectedFeedCategory = (category ||
     "Vendime") as "Vendime" | "Prokurime" | "Konsultime publike";
-  const { data, error } = await searchPublishedItems({
-    q,
-    category,
-    municipality,
-    year,
-    sort,
-  });
-  const { items: municipalities } = await getMunicipalityOptions();
-  const { items: latestItems } = await getLatestItems();
+
+  const [{ data, error }, { items: municipalities }, { items: latestItems }] =
+    await Promise.all([
+      searchPublishedItems({ q, category, municipality, year, sort }),
+      getMunicipalityOptions(),
+      getLatestItems(),
+    ]);
 
   return (
-    <>
-      <header className="w-full bg-black px-4 py-3 sm:px-6">
+    <div className="min-h-screen bg-slate-50">
+      <header className="w-full bg-slate-900 px-4 py-4 sm:px-6">
         <div className="mx-auto flex max-w-5xl items-center justify-between">
-          <span className="text-xs font-semibold uppercase tracking-widest text-white">
-            Transparency Radar Albania
-          </span>
-          <span className="text-xs text-slate-400">sq</span>
+          <div>
+            <span className="text-xs font-semibold uppercase tracking-widest text-blue-400">
+              Transparency Radar Albania
+            </span>
+            <p className="mt-0.5 text-xs text-slate-400">
+              Platforma kombëtare e transparencës bashkiake
+            </p>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-slate-500">sq</span>
+            <Link
+              href="/coverage"
+              className="text-xs text-slate-600 hover:text-slate-400"
+              title="Admin Coverage"
+            >
+              🔒
+            </Link>
+          </div>
         </div>
       </header>
 
       <main className="mx-auto flex w-full max-w-5xl flex-col gap-6 p-4 pb-10 sm:p-6">
 
-        {/* Hero + Search */}
-        <section className="w-full rounded-2xl border border-slate-200 bg-white p-6 sm:p-8">
-          <h1 className="font-serif text-4xl font-bold leading-tight text-slate-900 sm:text-5xl">
-            Kërko dokumente bashkiake
-          </h1>
-          <p className="mt-3 text-base text-slate-600">
-            Vendime, Prokurime dhe Konsultime nga të 61 bashkitë e Shqipërisë.
-          </p>
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
 
-          <form method="GET" className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <label className="col-span-full flex flex-col gap-1 text-xs font-medium text-slate-600">
-              Kërko
-              <input
-                type="text"
-                name="q"
-                id="q"
-                defaultValue={q}
-                placeholder="Kërko titull ose përmbledhje"
-                className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900"
-              />
-            </label>
-            <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
-              Kategoria
-              <select
-                name="category"
-                id="category"
-                defaultValue={category}
-                className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900"
-              >
-                <option value="">Të gjitha kategoritë</option>
-                {SEARCH_CATEGORIES.map((value) => (
-                  <option key={value} value={value}>
-                    {value}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
-              Viti
-              <input
-                type="number"
-                name="year"
-                id="year"
-                min={2000}
-                max={2100}
-                defaultValue={year}
-                placeholder="Viti (opsional)"
-                className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900"
-              />
-            </label>
-            <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
-              Rendit
-              <select
-                name="sort"
-                id="sort"
-                defaultValue={sort}
-                className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900"
-              >
-                {SORT_OPTIONS.map((value) => (
-                  <option key={value} value={value}>
-                    {value === "newest" ? "Më të rejat" : "Më të vjetrat"}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <button
-              type="submit"
-              className="col-span-full rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white sm:col-span-1"
-            >
-              Kërko
-            </button>
-          </form>
+          {/* Left column: hero + Shpenzime Prokurimi */}
+          <div className="flex flex-col gap-6 lg:col-span-2">
 
-          <div className="mt-4 flex flex-wrap gap-2">
-            <a
-              href="/?category=Vendime"
-              className="rounded-full border border-slate-300 px-3 py-1 text-sm font-medium text-slate-700 hover:bg-slate-50"
-            >
-              Vendime
-            </a>
-            <a
-              href="/?category=Prokurime"
-              className="rounded-full border border-slate-300 px-3 py-1 text-sm font-medium text-slate-700 hover:bg-slate-50"
-            >
-              Prokurime
-            </a>
-            <a
-              href="/?category=Konsultime+publike"
-              className="rounded-full border border-slate-300 px-3 py-1 text-sm font-medium text-slate-700 hover:bg-slate-50"
-            >
-              Konsultime
-            </a>
-          </div>
+            {/* Hero + Search */}
+            <section className="w-full rounded-2xl border border-slate-200 bg-white p-6 sm:p-8">
+              <h1 className="font-serif text-4xl font-bold leading-tight text-slate-900 sm:text-5xl">
+                Vendime. Prokurime. Konsultime.
+              </h1>
+              <p className="mt-2 text-base text-slate-600">
+                Çdo bashki. Çdo vit. Çdo dokument publik — në një vend.
+              </p>
 
-          <nav
-            aria-label="Navigim kryesor"
-            className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-slate-200 pt-4"
-          >
-            <Link
-              href="/status"
-              className="text-sm font-medium text-blue-800 underline"
-            >
-              Statusi Publik
-            </Link>
-            {municipalities.length > 0 ? (
-              <MunicipalityFeedCta
-                municipalities={municipalities}
-                defaultMunicipality={municipality}
-                selectedCategory={selectedFeedCategory}
-              />
-            ) : (
-              <Link
-                href="/municipality/tirane?category=Vendime"
-                className="text-sm font-medium text-blue-800 underline"
-              >
-                Njoftimet e Bashkisë
-              </Link>
-            )}
-            <Link
-              href="/coverage"
-              className="text-sm font-medium text-blue-800 underline"
-            >
-              Admin Coverage
-            </Link>
-          </nav>
-        </section>
-
-        {/* Të fundit */}
-        <section className="w-full rounded-2xl border border-slate-200 bg-white p-6 sm:p-8">
-          <h2 className="border-b border-slate-200 pb-2 text-xl font-semibold text-slate-900">
-            Të fundit
-          </h2>
-          {latestItems.length === 0 ? (
-            <p className="mt-4 text-sm text-slate-500">Nuk ka të dhëna.</p>
-          ) : (
-            <ul className="divide-y divide-slate-100">
-              {latestItems.map((item) => (
-                <li key={item.id} className="py-3">
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
-                    <span>{formatDate(item.published_at || item.collected_at)}</span>
-                    <span
-                      className={`rounded-full px-2 py-0.5 text-xs font-medium ${categoryBadgeClass(item.category)}`}
+              <form method="GET" className="mt-6 flex flex-col gap-3">
+                <input type="hidden" name="sort" value="newest" />
+                <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
+                  Kërko
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      name="q"
+                      id="q"
+                      defaultValue={q}
+                      placeholder="Kërko titull ose përmbledhje"
+                      className="flex-1 rounded-xl border border-slate-300 px-3 py-2.5 text-sm text-slate-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                    <button
+                      type="submit"
+                      className="rounded-xl bg-blue-600 px-6 py-2.5 text-sm font-semibold text-white hover:bg-blue-700"
                     >
-                      {item.category}
-                    </span>
-                    <span>{item.municipality_name || ""}</span>
+                      Kërko
+                    </button>
                   </div>
-                  <p className="mt-1 text-sm font-medium text-slate-900">
-                    {item.source_url ? (
-                      <a
-                        href={item.source_url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-blue-800 underline"
-                      >
-                        {item.title}
-                      </a>
-                    ) : (
-                      item.title
-                    )}
-                  </p>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
+                </label>
+                <div className="mt-2">
+                  <input
+                    type="number"
+                    name="year"
+                    id="year"
+                    min={2000}
+                    max={2100}
+                    defaultValue={year}
+                    placeholder="Filtro sipas vitit (opsional)"
+                    className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-700"
+                  />
+                </div>
+              </form>
 
-        {/* Shpenzime Prokurimi */}
-        <section className="w-full rounded-2xl border border-slate-200 bg-white p-6 sm:p-8">
-          <h2 className="border-b border-slate-200 pb-2 text-xl font-semibold text-slate-900">
-            Shpenzime Prokurimi
-          </h2>
-          <div className="mt-4">
-            <ProkurimeSpendCard municipalities={municipalities} />
+              <div className="mt-4 flex flex-wrap gap-2">
+                <a
+                  href="/?category=Vendime"
+                  className="rounded-full border border-blue-200 px-3 py-1 text-sm text-blue-700 hover:bg-blue-50"
+                >
+                  Vendime
+                </a>
+                <a
+                  href="/?category=Prokurime"
+                  className="rounded-full border border-blue-200 px-3 py-1 text-sm text-blue-700 hover:bg-blue-50"
+                >
+                  Prokurime
+                </a>
+                <a
+                  href="/?category=Konsultime+publike"
+                  className="rounded-full border border-blue-200 px-3 py-1 text-sm text-blue-700 hover:bg-blue-50"
+                >
+                  Konsultime
+                </a>
+              </div>
+
+              <nav
+                aria-label="Navigim kryesor"
+                className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-slate-200 pt-4"
+              >
+                <Link href="/status" className="text-sm text-blue-700 underline">
+                  Statusi Publik
+                </Link>
+                {municipalities.length > 0 ? (
+                  <MunicipalityFeedCta
+                    municipalities={municipalities}
+                    defaultMunicipality={municipality}
+                    selectedCategory={selectedFeedCategory}
+                  />
+                ) : (
+                  <Link
+                    href="/municipality/tirane?category=Vendime"
+                    className="text-sm text-blue-700 underline"
+                  >
+                    Njoftimet e Bashkisë
+                  </Link>
+                )}
+              </nav>
+            </section>
+
+            {/* Shpenzime Prokurimi */}
+            <section className="w-full rounded-2xl border border-slate-200 bg-white p-6 sm:p-8">
+              <h2 className="border-l-4 border-blue-600 pl-3 text-lg font-semibold text-slate-900">
+                Shpenzime Prokurimi
+              </h2>
+              <div className="mt-4">
+                <ProkurimeSpendCard municipalities={municipalities} />
+              </div>
+            </section>
+
           </div>
-        </section>
 
-        {/* Rreth Platformës */}
-        <section className="rounded-2xl border border-slate-200 bg-white p-6 sm:p-8">
-          <h2 className="border-b border-slate-200 pb-2 text-xl font-semibold text-slate-900">
+          {/* Right column: Të fundit sidebar */}
+          <div className="lg:col-span-1">
+            <section className="w-full rounded-2xl border border-slate-200 bg-white p-5 lg:sticky lg:top-4">
+              <h2 className="border-l-4 border-blue-600 pl-3 text-lg font-semibold text-slate-900">
+                Të fundit
+              </h2>
+              <TeFunditList items={latestItems} />
+            </section>
+          </div>
+
+        </div>
+
+        {/* Rreth Platformës — full width */}
+        <section className="w-full rounded-2xl border border-slate-200 bg-white p-6 sm:p-8">
+          <h2 className="border-l-4 border-blue-600 pl-3 text-lg font-semibold text-slate-900">
             Rreth Platformës
           </h2>
-          <div className="mt-4 space-y-3 text-sm text-slate-700">
+          <div className="mt-4 space-y-3 text-sm text-slate-600">
             <p>
               <strong>Qasje e përmirësuar në informacionin publik.</strong> Qytetarët, organizatat e shoqërisë civile dhe gazetarët mund të përdorin një platformë të vetme për të ndjekur vendimet bashkiake, të dhënat e prokurimit dhe konsultimet në të gjithë Shqipërinë.
             </p>
@@ -441,17 +394,17 @@ export default async function HomePage({
         ) : null}
 
         {q ? (
-          <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <h2 className="border-b border-slate-200 pb-2 text-xl font-semibold text-slate-900">
+          <section className="rounded-2xl border border-slate-200 bg-white p-6 sm:p-8">
+            <h2 className="border-l-4 border-blue-600 pl-3 text-lg font-semibold text-slate-900">
               Rezultate kërkimi
             </h2>
-            <p className="mt-3 text-sm text-slate-600">Rezultate: {data?.total || 0}</p>
+            <p className="mt-3 text-sm text-slate-500">Rezultate: {data?.total || 0}</p>
             <ul className="mt-4 space-y-3">
               {(data?.items || []).map((item) => {
                 const publicFileUrl = toAbsoluteApiUrl(item.primary_attachment_public_url);
                 return (
                   <li key={item.id} className="rounded-xl border border-slate-200 p-4">
-                    <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
+                    <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
                       <span>{formatDate(item.published_at || item.collected_at)}</span>
                       <span
                         className={`rounded-full px-2 py-0.5 text-xs font-medium ${categoryBadgeClass(item.category || "")}`}
@@ -462,14 +415,16 @@ export default async function HomePage({
                       <span>{item.source_host || "burim i panjohur"}</span>
                     </div>
                     <p className="mt-2 text-base font-semibold text-slate-900">{item.title}</p>
-                    {item.summary ? <p className="mt-1 text-sm text-slate-600">{item.summary}</p> : null}
+                    {item.summary ? (
+                      <p className="mt-1 text-sm text-slate-600">{item.summary}</p>
+                    ) : null}
                     <div className="mt-3 flex flex-wrap gap-3 text-sm">
                       {item.source_url ? (
                         <a
                           href={item.source_url}
                           target="_blank"
                           rel="noreferrer"
-                          className="font-medium text-blue-800 underline"
+                          className="font-medium text-blue-700 underline"
                         >
                           Burimi
                         </a>
@@ -479,7 +434,7 @@ export default async function HomePage({
                           href={publicFileUrl}
                           target="_blank"
                           rel="noreferrer"
-                          className="font-medium text-blue-800 underline"
+                          className="font-medium text-blue-700 underline"
                         >
                           PDF Publik
                         </a>
@@ -495,6 +450,6 @@ export default async function HomePage({
           </section>
         ) : null}
       </main>
-    </>
+    </div>
   );
 }
