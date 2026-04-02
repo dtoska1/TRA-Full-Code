@@ -110,6 +110,12 @@ function toAbsoluteApiUrl(relativePath: string | null): string | null {
   }
 }
 
+function categoryBadgeClass(category: string): string {
+  if (category === "Prokurime") return "bg-amber-100 text-amber-800";
+  if (category === "Konsultime publike") return "bg-green-100 text-green-800";
+  return "bg-blue-100 text-blue-800";
+}
+
 async function searchPublishedItems(filters: {
   q: string;
   category: string;
@@ -224,203 +230,271 @@ export default async function HomePage({
   const { items: latestItems } = await getLatestItems();
 
   return (
-    <main className="mx-auto flex w-full max-w-5xl flex-col gap-4 p-4 pb-10 sm:p-6">
-      <ProkurimeSpendCard municipalities={municipalities} />
+    <>
+      <header className="w-full bg-black px-4 py-3 sm:px-6">
+        <div className="mx-auto flex max-w-5xl items-center justify-between">
+          <span className="text-xs font-semibold uppercase tracking-widest text-white">
+            Transparency Radar Albania
+          </span>
+          <span className="text-xs text-slate-400">sq</span>
+        </div>
+      </header>
 
-      <section className="w-full rounded-3xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
-        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-          Transparency Radar Albania
-        </p>
-        <h1 className="mt-2 text-3xl font-semibold leading-tight text-slate-900">
-          Kërko Dokumente Bashkiake
-        </h1>
-        <p className="mt-3 text-sm text-slate-600">
-          Shfleto Vendime, Prokurime dhe Konsultime nga të gjitha bashkitë.
-        </p>
+      <main className="mx-auto flex w-full max-w-5xl flex-col gap-6 p-4 pb-10 sm:p-6">
 
-        <form method="GET" className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <input
-            type="text"
-            name="q"
-            defaultValue={q}
-            placeholder="Kërko titull ose përmbledhje"
-            className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
-          />
-          <input
-            type="text"
-            name="municipality"
-            defaultValue={municipality}
-            placeholder="Bashkia (p.sh. tirane)"
-            className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
-          />
-          <select
-            name="category"
-            defaultValue={category}
-            className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
-          >
-            <option value="">Të gjitha kategoritë</option>
-            {SEARCH_CATEGORIES.map((value) => (
-              <option key={value} value={value}>
-                {value}
-              </option>
-            ))}
-          </select>
-          <input
-            type="number"
-            name="year"
-            min={2000}
-            max={2100}
-            defaultValue={year}
-            placeholder="Viti (opsional)"
-            className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
-          />
-          <select
-            name="sort"
-            defaultValue={sort}
-            className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
-          >
-            {SORT_OPTIONS.map((value) => (
-              <option key={value} value={value}>
-                {value === "newest" ? "Më të rejat" : "Më të vjetrat"}
-              </option>
-            ))}
-          </select>
-          <button
-            type="submit"
-            className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
-          >
-            Kërko
-          </button>
-        </form>
+        {/* Hero + Search */}
+        <section className="w-full rounded-2xl border border-slate-200 bg-white p-6 sm:p-8">
+          <h1 className="font-serif text-4xl font-bold leading-tight text-slate-900 sm:text-5xl">
+            Kërko dokumente bashkiake
+          </h1>
+          <p className="mt-3 text-base text-slate-600">
+            Vendime, Prokurime dhe Konsultime nga të 61 bashkitë e Shqipërisë.
+          </p>
 
-        <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <Link
-            href="/status"
-            className="inline-flex items-center justify-center rounded-xl border border-slate-300 bg-slate-50 px-5 py-3 text-base font-medium text-slate-700"
-          >
-            Statusi Publik
-          </Link>
-          {municipalities.length > 0 ? (
-            <MunicipalityFeedCta
-              municipalities={municipalities}
-              defaultMunicipality={municipality}
-              selectedCategory={selectedFeedCategory}
-            />
-          ) : (
-            <Link
-              href="/municipality/tirane?category=Vendime"
-              className="inline-flex items-center justify-center rounded-xl border border-slate-300 bg-slate-50 px-5 py-3 text-base font-medium text-slate-700"
+          <form method="GET" className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <label className="col-span-full flex flex-col gap-1 text-xs font-medium text-slate-600">
+              Kërko
+              <input
+                type="text"
+                name="q"
+                id="q"
+                defaultValue={q}
+                placeholder="Kërko titull ose përmbledhje"
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900"
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
+              Kategoria
+              <select
+                name="category"
+                id="category"
+                defaultValue={category}
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900"
+              >
+                <option value="">Të gjitha kategoritë</option>
+                {SEARCH_CATEGORIES.map((value) => (
+                  <option key={value} value={value}>
+                    {value}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
+              Viti
+              <input
+                type="number"
+                name="year"
+                id="year"
+                min={2000}
+                max={2100}
+                defaultValue={year}
+                placeholder="Viti (opsional)"
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900"
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
+              Rendit
+              <select
+                name="sort"
+                id="sort"
+                defaultValue={sort}
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900"
+              >
+                {SORT_OPTIONS.map((value) => (
+                  <option key={value} value={value}>
+                    {value === "newest" ? "Më të rejat" : "Më të vjetrat"}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              type="submit"
+              className="col-span-full rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white sm:col-span-1"
             >
-              Njoftimet e Bashkisë
-            </Link>
-          )}
-          <Link
-            href="/coverage"
-            className="inline-flex items-center justify-center rounded-xl border border-slate-300 bg-slate-50 px-5 py-3 text-base font-medium text-slate-700"
+              Kërko
+            </button>
+          </form>
+
+          <div className="mt-4 flex flex-wrap gap-2">
+            <a
+              href="/?category=Vendime"
+              className="rounded-full border border-slate-300 px-3 py-1 text-sm font-medium text-slate-700 hover:bg-slate-50"
+            >
+              Vendime
+            </a>
+            <a
+              href="/?category=Prokurime"
+              className="rounded-full border border-slate-300 px-3 py-1 text-sm font-medium text-slate-700 hover:bg-slate-50"
+            >
+              Prokurime
+            </a>
+            <a
+              href="/?category=Konsultime+publike"
+              className="rounded-full border border-slate-300 px-3 py-1 text-sm font-medium text-slate-700 hover:bg-slate-50"
+            >
+              Konsultime
+            </a>
+          </div>
+
+          <nav
+            aria-label="Navigim kryesor"
+            className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-slate-200 pt-4"
           >
-            Admin Coverage
-          </Link>
-        </div>
-      </section>
-
-      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-        <h2 className="text-xl font-semibold text-slate-900">Të fundit</h2>
-        {latestItems.length === 0 ? (
-          <p className="mt-4 text-sm text-slate-500">Nuk ka të dhëna.</p>
-        ) : (
-          <ul className="mt-4 space-y-3">
-            {latestItems.map((item) => (
-              <li key={item.id} className="rounded-xl border border-slate-200 p-4">
-                <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
-                  <span>{formatDate(item.published_at || item.collected_at)}</span>
-                  <span className="rounded-full bg-slate-100 px-2 py-0.5">{item.category}</span>
-                  <span>{item.municipality_name || ""}</span>
-                </div>
-                <p className="mt-2 text-sm font-semibold text-slate-900">
-                  {item.source_url ? (
-                    <a
-                      href={item.source_url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-blue-700 underline"
-                    >
-                      {item.title}
-                    </a>
-                  ) : (
-                    item.title
-                  )}
-                </p>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-
-      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-        <h2 className="text-xl font-semibold text-slate-900">Rreth Platformës</h2>
-        <div className="mt-3 space-y-3 text-sm text-slate-700">
-          <p>
-            <strong>Qasje e përmirësuar në informacionin publik.</strong> Qytetarët, organizatat e shoqërisë civile dhe gazetarët mund të përdorin një platformë të vetme për të ndjekur vendimet bashkiake, të dhënat e prokurimit dhe konsultimet në të gjithë Shqipërinë.
-          </p>
-          <p>
-            <strong>Demokraci dixhitale në veprim.</strong> Transparency Radar Albania shndërron informacionin e fragmentuar publik në të dhëna të aksesueshme dhe të veprueshme, që mbështesin pjesëmarrjen në qeverisjen lokale dhe llogaridhënien.
-          </p>
-        </div>
-      </section>
-
-      {error ? (
-        <section className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-          {error}
+            <Link
+              href="/status"
+              className="text-sm font-medium text-blue-800 underline"
+            >
+              Statusi Publik
+            </Link>
+            {municipalities.length > 0 ? (
+              <MunicipalityFeedCta
+                municipalities={municipalities}
+                defaultMunicipality={municipality}
+                selectedCategory={selectedFeedCategory}
+              />
+            ) : (
+              <Link
+                href="/municipality/tirane?category=Vendime"
+                className="text-sm font-medium text-blue-800 underline"
+              >
+                Njoftimet e Bashkisë
+              </Link>
+            )}
+            <Link
+              href="/coverage"
+              className="text-sm font-medium text-blue-800 underline"
+            >
+              Admin Coverage
+            </Link>
+          </nav>
         </section>
-      ) : null}
 
-      {q ? (
-        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <p className="text-sm text-slate-600">Rezultate: {data?.total || 0}</p>
-          <ul className="mt-4 space-y-3">
-            {(data?.items || []).map((item) => {
-              const publicFileUrl = toAbsoluteApiUrl(item.primary_attachment_public_url);
-              return (
-                <li key={item.id} className="rounded-xl border border-slate-200 p-4">
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
+        {/* Të fundit */}
+        <section className="w-full rounded-2xl border border-slate-200 bg-white p-6 sm:p-8">
+          <h2 className="border-b border-slate-200 pb-2 text-xl font-semibold text-slate-900">
+            Të fundit
+          </h2>
+          {latestItems.length === 0 ? (
+            <p className="mt-4 text-sm text-slate-500">Nuk ka të dhëna.</p>
+          ) : (
+            <ul className="divide-y divide-slate-100">
+              {latestItems.map((item) => (
+                <li key={item.id} className="py-3">
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
                     <span>{formatDate(item.published_at || item.collected_at)}</span>
-                    <span className="rounded-full bg-slate-100 px-2 py-0.5">{item.category || "Unknown"}</span>
-                    <span>{item.municipality_name || item.municipality_name_key || "Unknown municipality"}</span>
-                    <span>{item.source_host || "source unavailable"}</span>
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-xs font-medium ${categoryBadgeClass(item.category)}`}
+                    >
+                      {item.category}
+                    </span>
+                    <span>{item.municipality_name || ""}</span>
                   </div>
-                  <p className="mt-2 text-base font-semibold text-slate-900">{item.title}</p>
-                  {item.summary ? <p className="mt-1 text-sm text-slate-600">{item.summary}</p> : null}
-                  <div className="mt-3 flex flex-wrap gap-3 text-sm">
+                  <p className="mt-1 text-sm font-medium text-slate-900">
                     {item.source_url ? (
                       <a
                         href={item.source_url}
                         target="_blank"
                         rel="noreferrer"
-                        className="font-medium text-blue-700 underline"
+                        className="text-blue-800 underline"
                       >
-                        Burimi
+                        {item.title}
                       </a>
-                    ) : null}
-                    {publicFileUrl ? (
-                      <a
-                        href={publicFileUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="font-medium text-emerald-700 underline"
-                      >
-                        PDF Publik
-                      </a>
-                    ) : null}
-                  </div>
+                    ) : (
+                      item.title
+                    )}
+                  </p>
                 </li>
-              );
-            })}
-          </ul>
-          {(data?.items || []).length === 0 ? (
-            <p className="mt-4 text-sm text-slate-500">Nuk u gjetën rezultate për këtë kërkim.</p>
-          ) : null}
+              ))}
+            </ul>
+          )}
         </section>
-      ) : null}
-    </main>
+
+        {/* Shpenzime Prokurimi */}
+        <section className="w-full rounded-2xl border border-slate-200 bg-white p-6 sm:p-8">
+          <h2 className="border-b border-slate-200 pb-2 text-xl font-semibold text-slate-900">
+            Shpenzime Prokurimi
+          </h2>
+          <div className="mt-4">
+            <ProkurimeSpendCard municipalities={municipalities} />
+          </div>
+        </section>
+
+        {/* Rreth Platformës */}
+        <section className="rounded-2xl border border-slate-200 bg-white p-6 sm:p-8">
+          <h2 className="border-b border-slate-200 pb-2 text-xl font-semibold text-slate-900">
+            Rreth Platformës
+          </h2>
+          <div className="mt-4 space-y-3 text-sm text-slate-700">
+            <p>
+              <strong>Qasje e përmirësuar në informacionin publik.</strong> Qytetarët, organizatat e shoqërisë civile dhe gazetarët mund të përdorin një platformë të vetme për të ndjekur vendimet bashkiake, të dhënat e prokurimit dhe konsultimet në të gjithë Shqipërinë.
+            </p>
+            <p>
+              <strong>Demokraci dixhitale në veprim.</strong> Transparency Radar Albania shndërron informacionin e fragmentuar publik në të dhëna të aksesueshme dhe të veprueshme, që mbështesin pjesëmarrjen në qeverisjen lokale dhe llogaridhënien.
+            </p>
+          </div>
+        </section>
+
+        {error ? (
+          <section className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+            {error}
+          </section>
+        ) : null}
+
+        {q ? (
+          <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <h2 className="border-b border-slate-200 pb-2 text-xl font-semibold text-slate-900">
+              Rezultate kërkimi
+            </h2>
+            <p className="mt-3 text-sm text-slate-600">Rezultate: {data?.total || 0}</p>
+            <ul className="mt-4 space-y-3">
+              {(data?.items || []).map((item) => {
+                const publicFileUrl = toAbsoluteApiUrl(item.primary_attachment_public_url);
+                return (
+                  <li key={item.id} className="rounded-xl border border-slate-200 p-4">
+                    <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
+                      <span>{formatDate(item.published_at || item.collected_at)}</span>
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-xs font-medium ${categoryBadgeClass(item.category || "")}`}
+                      >
+                        {item.category || "E panjohur"}
+                      </span>
+                      <span>{item.municipality_name || item.municipality_name_key || "Bashki e panjohur"}</span>
+                      <span>{item.source_host || "burim i panjohur"}</span>
+                    </div>
+                    <p className="mt-2 text-base font-semibold text-slate-900">{item.title}</p>
+                    {item.summary ? <p className="mt-1 text-sm text-slate-600">{item.summary}</p> : null}
+                    <div className="mt-3 flex flex-wrap gap-3 text-sm">
+                      {item.source_url ? (
+                        <a
+                          href={item.source_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="font-medium text-blue-800 underline"
+                        >
+                          Burimi
+                        </a>
+                      ) : null}
+                      {publicFileUrl ? (
+                        <a
+                          href={publicFileUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="font-medium text-blue-800 underline"
+                        >
+                          PDF Publik
+                        </a>
+                      ) : null}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+            {(data?.items || []).length === 0 ? (
+              <p className="mt-4 text-sm text-slate-500">Nuk u gjetën rezultate për këtë kërkim.</p>
+            ) : null}
+          </section>
+        ) : null}
+      </main>
+    </>
   );
 }
