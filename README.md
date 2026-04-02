@@ -217,6 +217,47 @@ Frontend env:
 - Copy `frontend/.env.example` to `frontend/.env.local` (optional for local dev).
 - Default API base is `http://localhost:5050` via `NEXT_PUBLIC_API_BASE_URL`.
 
+### 6.2) Test on iPhone over local Wi-Fi
+
+Use this only for local network testing on the same Wi-Fi. Do not expose TRA to the internet, use tunnels, or deploy anything for this workflow.
+
+Find your Mac LAN IP:
+
+```bash
+ipconfig getifaddr en0 || ipconfig getifaddr en1
+```
+
+Set the frontend API base in `frontend/.env.local`:
+
+```bash
+cd frontend
+printf "NEXT_PUBLIC_API_BASE_URL=http://192.168.1.23:5050\n" > .env.local
+npm run dev:lan
+```
+
+Update `backend/.env` so LAN access is explicit:
+
+```env
+HOST=0.0.0.0
+PORT=5050
+PUBLIC_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001,http://192.168.1.23:3000
+```
+
+Run the backend:
+
+```bash
+cd backend
+npm run dev
+```
+
+Then open `http://192.168.1.23:3000` on your iPhone and confirm the backend is reachable directly:
+
+```bash
+curl http://192.168.1.23:5050/health
+```
+
+You can also open `http://192.168.1.23:5050/health` in Safari on the iPhone to verify the phone can reach the backend over the same Wi-Fi.
+
 Coverage UI token handling:
 
 - Token is entered manually in the browser.
@@ -692,6 +733,21 @@ Offline parser test (fixtures only):
 cd backend
 npm run test:prokurime-app
 ```
+
+2026 real-coverage audit / repair helpers:
+
+```bash
+cd backend
+npm run audit:prokurime:2026
+npm run backfill:prokurime-records:2026
+```
+
+Notes:
+- `audit:prokurime:2026` writes `backend/tmp/prokurime_2026_coverage.json` with per-municipality `items_found`, `records_found`, `total_amount_all`, dashboard totals, and a `status` / `reason`.
+- `backfill:prokurime-records:2026` revisits already-ingested 2026 `Prokurime` items that are missing a `prokurime_records` row or still have a null amount/currency and re-extracts from the APP `ExportDocument` CSV without recreating items.
+- Both scripts honor `API_BASE` if you want to target a temporary local backend instance on a non-default port.
+- Admin-only cache invalidation endpoint for fresh dashboard verification:
+  `POST /api/admin/cache/dashboard-prokurime-pie/invalidate`
 
 Expected response counters for year-filtered runs:
 - `skipped_missing_date`

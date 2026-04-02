@@ -15,6 +15,8 @@
     "run:batch:registry": "node scripts/run_registry_category_batch.js",
     "run:batch:konsultime": "node scripts/run_registry_category_batch.js --category=\"Konsultime publike\"",
     "run:prokurime:nationwide": "node scripts/run_prokurime_nationwide.js",
+    "audit:prokurime:2026": "node scripts/audit_prokurime_2026_coverage.js --year=2026",
+    "backfill:prokurime-records:2026": "node scripts/backfill_prokurime_records_2026.js --year=2026",
     "run:vendime:nationwide": "node scripts/run_vendime_nationwide.js",
     "run:konsultime:nationwide": "node scripts/run_konsultime_nationwide.js",
     "audit:municipality-keys": "node scripts/audit_municipality_keys.js",

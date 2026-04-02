@@ -7,7 +7,20 @@ const LOCAL_OPERATOR_PREFIXES = [
   "AGJENCIA E SHERBIMEVE PUBLIKE",
   "AGJENCIA E SHERBIMEVE PUBLIKE RURALE",
   "NDERMARRJA RRUGA",
+  "QENDRA EKONOMIKE E ARSIMIT",
+  "QENDRA E ARTIT DHE E KULTURES",
+  "SHOQERIA RAJONALE UJESJELLES KANALIZIME",
+  "UJESJELLES KANALIZIME",
+  "NDERMARRJA E SHERBIMEVE KOMUNALE",
+  "NDERMARRJA E GJELBERIMIT",
+  "NDERMARRJA E MIREMBAJTJES SE RRUGEVE",
 ];
+
+const EXACT_AUTHORITY_MUNICIPALITY_OVERRIDES = new Map([
+  ["QENDRA E ARTIT DHE E KULTURES KORCE", "korce"],
+  ["QENDRA EKONOMIKE E ARSIMIT BASHKIA KUCOVE", "kucove"],
+  ["SHKOLLA E MESME TREGTARE VLORE", "vlore"],
+]);
 
 function normalizeText(value) {
   return String(value || "")
@@ -156,6 +169,16 @@ function getAllowedLocalOperatorPrefix(normalizedAuthority) {
   return null;
 }
 
+function findMunicipalityContextByNameKey(municipalityContexts, targetNameKey) {
+  const key = String(targetNameKey || "").trim().toLowerCase();
+  if (!key) return null;
+  for (const municipalityContext of municipalityContexts || []) {
+    const nameKey = String(municipalityContext?.nameKey || "").trim().toLowerCase();
+    if (nameKey === key) return municipalityContext;
+  }
+  return null;
+}
+
 function matchAuthorityToMunicipalityAcrossContexts({ authority, municipalityContexts }) {
   const contexts = Array.isArray(municipalityContexts) ? municipalityContexts : [];
   const normalizedAuthority = normalizeText(authority);
@@ -168,6 +191,21 @@ function matchAuthorityToMunicipalityAcrossContexts({ authority, municipalityCon
       reason: "missing_authority",
       matched_term: null,
     };
+  }
+
+  const overrideMunicipalityKey = EXACT_AUTHORITY_MUNICIPALITY_OVERRIDES.get(normalizedAuthority) || null;
+  if (overrideMunicipalityKey) {
+    const municipalityContext = findMunicipalityContextByNameKey(contexts, overrideMunicipalityKey);
+    if (municipalityContext) {
+      return {
+        matched: true,
+        municipalityContext,
+        match_mode: "exact_override",
+        matched_prefix: null,
+        reason: "matched_exact_override",
+        matched_term: overrideMunicipalityKey,
+      };
+    }
   }
 
   const hasBashkiaMarker = /\bBASHKIA\b/.test(normalizedAuthority);
@@ -252,6 +290,7 @@ function matchAuthorityToMunicipalityAcrossContexts({ authority, municipalityCon
 }
 
 module.exports = {
+  EXACT_AUTHORITY_MUNICIPALITY_OVERRIDES,
   LOCAL_OPERATOR_PREFIXES,
   buildMunicipalityTermSet,
   matchAuthorityToMunicipality,

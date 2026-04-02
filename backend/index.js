@@ -2,6 +2,7 @@
 const path = require("path");
 const fs = require("fs");
 const fsp = require("fs/promises");
+const os = require("os");
 
 require("dotenv").config({
   path: process.env.DOTENV_CONFIG_PATH || path.join(__dirname, ".env"),
@@ -34,6 +35,9 @@ const {
   parseCsvRecordsStrict,
   normalizeProcedureId,
 } = require("./scrapers/prokurimeAppExport");
+const {
+  rebuildProkurimeRecordForItem,
+} = require("./lib/prokurimeRecords");
 
 console.log("LOADED INDEX.JS FROM:", __filename);
 
@@ -46,6 +50,11 @@ const PUBLIC_ORIGINS = String(process.env.PUBLIC_ORIGINS || "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
+// LAN_ORIGIN: single origin for LAN dev mode (e.g. http://10.0.63.79:3000).
+// Not hardcoded — only applied when the env var is present.
+const LAN_ORIGIN = String(process.env.LAN_ORIGIN || "").trim();
+if (LAN_ORIGIN) PUBLIC_ORIGINS.push(LAN_ORIGIN);
+// Localhost frontend origins stay allowed by default for normal development.
 const LOCAL_PUBLIC_ORIGINS = new Set([
   "http://localhost:3000",
   "http://127.0.0.1:3000",
@@ -66,6 +75,7 @@ if (String(process.env.TRUST_PROXY || "") === "1") {
 // --------------------
 // Middleware
 // --------------------
+// Add LAN frontend origins like http://192.168.1.23:3000 via PUBLIC_ORIGINS when needed.
 const originAllowlist = new Set(PUBLIC_ORIGINS);
 
 function isAllowedLocalPublicOrigin(origin) {
@@ -1581,9 +1591,9 @@ async function upsertRegistryDocumentItem({
 
 async function getMunicipalityId({ municipality, municipality_id }) {
   if (municipality_id !== undefined && municipality_id !== null && String(municipality_id).trim() !== "") {
-    const n = Number(String(municipality_id).trim());
-    if (!Number.isInteger(n) || n < 1) return null;
-    return n;
+    const rawMunicipalityId = String(municipality_id).trim();
+    if (isUuid(rawMunicipalityId)) return rawMunicipalityId;
+    return null;
   }
   if (!municipality) return null;
 
@@ -2252,6 +2262,7 @@ app.get("/", (req, res) => {
       "/api/debug/db-encoding",
       "/api/municipalities",
       "/api/dashboard/prokurime/pie",
+      "/api/admin/cache/dashboard-prokurime-pie/invalidate",
       "/api/admin/coverage",
       "/api/admin/items/manual",
       "/api/admin/files/:id",
@@ -2667,6 +2678,15 @@ app.post("/api/admin/publish", requireAdmin, async (req, res) => {
       message: safePublicErrorMessage(err, "Database operation failed"),
     });
   }
+});
+
+app.post("/api/admin/cache/dashboard-prokurime-pie/invalidate", requireAdmin, async (req, res) => {
+  invalidateDashboardProkurimePieCache();
+  return res.json({
+    ok: true,
+    cache: "dashboard_prokurime_pie",
+    invalidated: true,
+  });
 });
 
 app.post("/api/admin/items/manual", requireAdmin, parseManualUpload, async (req, res) => {
@@ -3977,58 +3997,26 @@ app.post("/api/scrape/run", async (req, res) => {
                   `[prokurime_records] skip error item_not_found=true municipality_id=${rowMunicipalityId}`
                 );
               } else {
-                const parsedExportSource = parseAppExportDocumentUrl(sourceUrl);
-                if (parsedExportSource.isExportDocument) {
-                  let exportPayload = prokurimeExportCache.get(parsedExportSource.exportUrl);
-                  if (!exportPayload) {
-                    exportPayload = await fetchProkurimeExportPayload(parsedExportSource.exportUrl);
-                    prokurimeExportCache.set(parsedExportSource.exportUrl, exportPayload);
-                    if (exportPayload.kind === "non_csv") {
-                      console.warn(
-                        `[prokurime_records] skip non_csv export_url=${parsedExportSource.exportUrl} reason=${exportPayload.reason}`
-                      );
-                    } else if (exportPayload.kind === "error") {
-                      console.warn(
-                        `[prokurime_records] skip error export_url=${parsedExportSource.exportUrl} err=${exportPayload.reason}`
-                      );
-                    }
-                  }
-
-                  if (exportPayload.kind === "csv") {
-                    if (!exportPayload.sampleLogged && exportPayload.records.length > 0) {
-                      console.log(
-                        `[prokurime_records] sample_row export_url=${parsedExportSource.exportUrl} row=${truncateLogJson(
-                          exportPayload.records[0]
-                        )}`
-                      );
-                      exportPayload.sampleLogged = true;
-                    }
-
-                    const bestRow = findBestExportRowForItem({
-                      records: exportPayload.records,
-                      procedureHint: parsedExportSource.procedureHint,
-                      procedureId: it.procedure_id,
-                    });
-                    const extractedFields = extractProkurimeRecordFields({
-                      record: bestRow?.record || {},
-                      fallbackProcedureRef:
-                        bestRow?.procedureRef ||
-                        it.procedure_id ||
-                        parsedExportSource.procedureHint ||
-                        null,
-                    });
-
-                    await upsertProkurimeRecord({
-                      itemId,
-                      municipalityId: rowMunicipalityId,
-                      amountValue: extractedFields.amountValue,
-                      amountCurrency: extractedFields.amountCurrency,
-                      supplierName: extractedFields.supplierName,
-                      cpvCode: extractedFields.cpvCode,
-                      procedureRef: extractedFields.procedureRef,
-                      sourceExportUrl: parsedExportSource.exportUrl,
-                    });
-                  }
+                const repairResult = await rebuildProkurimeRecordForItem({
+                  db: pool,
+                  item: {
+                    itemId,
+                    municipalityId: rowMunicipalityId,
+                    sourceUrl,
+                    title,
+                    publishedDate: published_date,
+                    procedureId: it.procedure_id || null,
+                  },
+                  requestTimeoutMs: SCRAPE_REQUEST_TIMEOUT_MS,
+                  exportPayloadCache: prokurimeExportCache,
+                  errorFormatter: (err, fallback) =>
+                    safePublicErrorMessage(err, fallback || "fetch_failed"),
+                  invalidateCache: invalidateDashboardProkurimePieCache,
+                });
+                if (repairResult.status !== "upserted") {
+                  console.warn(
+                    `[prokurime_records] skip municipality_id=${rowMunicipalityId} reason=${repairResult.reason}`
+                  );
                 }
               }
             } catch (prokurimeRecordErr) {
@@ -4928,7 +4916,35 @@ app.post("/api/scrape/run", async (req, res) => {
   }
 });
 
-const port = process.env.PORT || 5050;
-app.listen(port, () => {
-  console.log(`Server running on http://localhost:${port}`);
+function getLanClientUrls(host, port) {
+  if (host !== "0.0.0.0" && host !== "::") return [];
+
+  const urls = new Set();
+  for (const addresses of Object.values(os.networkInterfaces())) {
+    for (const address of addresses || []) {
+      if (!address || address.internal) continue;
+      const family =
+        typeof address.family === "string"
+          ? address.family
+          : address.family === 4
+            ? "IPv4"
+            : "";
+      if (family !== "IPv4") continue;
+      urls.add(`http://${address.address}:${port}`);
+    }
+  }
+
+  return Array.from(urls).sort();
+}
+
+const host = String(process.env.HOST || "127.0.0.1").trim() || "127.0.0.1";
+const port = Number.parseInt(String(process.env.PORT || "5050"), 10) || 5050;
+
+app.listen(port, host, () => {
+  console.log(`Server running on http://${host}:${port}`);
+
+  const lanClientUrls = getLanClientUrls(host, port);
+  if (lanClientUrls.length > 0) {
+    console.log(`LAN clients can use: ${lanClientUrls.join(", ")}`);
+  }
 });

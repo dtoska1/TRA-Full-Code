@@ -8,6 +8,13 @@ const {
   buildProkurimeAppDedupKey,
   __test: prokTest,
 } = require("../scrapers/prokurimeAppExport");
+const {
+  parseAmountValue,
+  detectAmountCurrency,
+  normalizeAmountCurrencyForStorage,
+  findBestExportRowForItem,
+} = require("../lib/prokurimeRecords");
+const { matchAuthorityToMunicipalityAcrossContexts } = require("../lib/prokurimeAuthorityMatch");
 
 function assert(condition, message) {
   if (!condition) {
@@ -82,6 +89,28 @@ async function run() {
   assert(
     parsedSemicolon.records[0]["Vlera e fondit"] === "1.234,56",
     "Semicolon delimiter CSV parsing failed"
+  );
+  assert(parseAmountValue("1.234.567,89") === 1234567.89, "EU amount parsing failed");
+  assert(parseAmountValue("1,234,567.89") === 1234567.89, "US amount parsing failed");
+  assert(parseAmountValue("1234567") === 1234567, "Plain integer amount parsing failed");
+  assert(parseAmountValue("Lek 250000") === 250000, "Currency-prefixed amount parsing failed");
+  assert(parseAmountValue("") === null, "Blank amount should parse to null");
+  assert(parseAmountValue("n/a") === null, "Malformed amount should parse to null");
+  assert(
+    detectAmountCurrency({ rawAmount: "Lek 250000", rawCurrency: "" }) === "ALL",
+    "Blank currency should default to ALL when APP row implies local currency"
+  );
+  assert(
+    detectAmountCurrency({ rawAmount: "100", rawCurrency: "GBP" }) === null,
+    "Unknown explicit currency should remain null"
+  );
+  assert(
+    normalizeAmountCurrencyForStorage("usd") === "USD",
+    "Currency normalization to uppercase failed"
+  );
+  assert(
+    normalizeAmountCurrencyForStorage("gbp") === null,
+    "Unknown currency should remain null in storage normalization"
   );
 
   const fakeFetch = async (url) => {
@@ -230,6 +259,74 @@ async function run() {
   assert(
     !fallbackResult.items.some((item) => item.municipality_name_key === "korce"),
     "Non-whitelisted suffix-only authority should not match"
+  );
+
+  const uniqueFallbackMatch = findBestExportRowForItem({
+    records: [
+      {
+        "Object of Contract": "Sherbim printimi publikimi per vitin 2026",
+        "Date of Publication": "10.03.2026",
+        "Reference No": "REF-ONE-2026",
+      },
+      {
+        "Object of Contract": "Different title",
+        "Date of Publication": "10.03.2026",
+        "Reference No": "REF-TWO-2026",
+      },
+    ],
+    procedureHint: null,
+    procedureId: null,
+    publishedDate: "2026-03-10",
+    title: "Sherbim printimi publikimi per vitin 2026",
+  });
+  assert(uniqueFallbackMatch.matched === true, "Unique title/date fallback should match");
+  assert(
+    uniqueFallbackMatch.matchStrategy === "title_date_fallback",
+    `Unexpected fallback match strategy: ${uniqueFallbackMatch.matchStrategy}`
+  );
+
+  const ambiguousFallbackMatch = findBestExportRowForItem({
+    records: [
+      {
+        "Object of Contract": "Sherbim printimi publikimi per vitin 2026",
+        "Date of Publication": "10.03.2026",
+        "Reference No": "REF-ONE-2026",
+      },
+      {
+        "Object of Contract": "Sherbim printimi publikimi per vitin 2026",
+        "Date of Publication": "10.03.2026",
+        "Reference No": "REF-TWO-2026",
+      },
+    ],
+    procedureHint: null,
+    procedureId: null,
+    publishedDate: "2026-03-10",
+    title: "Sherbim printimi publikimi per vitin 2026",
+  });
+  assert(
+    ambiguousFallbackMatch.matched === false &&
+      ambiguousFallbackMatch.reason === "ambiguous_title_date_fallback",
+    `Ambiguous title/date fallback should be rejected (${JSON.stringify(ambiguousFallbackMatch)})`
+  );
+
+  const overrideMatch = matchAuthorityToMunicipalityAcrossContexts({
+    authority: "Qendra e Artit dhe e Kultures Korce",
+    municipalityContexts: [
+      {
+        nameKey: "korce",
+        municipalityTerms: ["Korce"],
+      },
+      {
+        nameKey: "vlore",
+        municipalityTerms: ["Vlore"],
+      },
+    ],
+  });
+  assert(overrideMatch.matched === true, "Expected exact authority override match");
+  assert(
+    overrideMatch.municipalityContext?.nameKey === "korce" &&
+      overrideMatch.match_mode === "exact_override",
+    `Unexpected exact override target: ${JSON.stringify(overrideMatch)}`
   );
 
   console.log("Prokurime APP export parser tests passed.");
