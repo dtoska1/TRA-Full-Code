@@ -4069,7 +4069,8 @@ app.post("/api/scrape/run", async (req, res) => {
               SET
                 last_seen_utc = now(),
                 last_error_type = NULL,
-                cooldown_until_utc = NULL
+                cooldown_until_utc = NULL,
+                homepage_status = 'OK'
               WHERE id = $1
               `,
               [registryRow.id]
@@ -4422,7 +4423,8 @@ app.post("/api/scrape/run", async (req, res) => {
             SET
               last_seen_utc = now(),
               last_error_type = NULL,
-              cooldown_until_utc = NULL
+              cooldown_until_utc = NULL,
+              homepage_status = 'OK'
             WHERE id = $1
             `,
             [registryRow.id]
@@ -4770,7 +4772,8 @@ app.post("/api/scrape/run", async (req, res) => {
           SET
             last_seen_utc = now(),
             last_error_type = NULL,
-            cooldown_until_utc = NULL
+            cooldown_until_utc = NULL,
+            homepage_status = 'OK'
           WHERE id = $1
           `,
           [registryRow.id]
