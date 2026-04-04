@@ -16,6 +16,7 @@ frontend/.env*
 **/dist/
 **/build/
 **/.next/
+**/.next-dev/
 **/out/
 
 # Logs
@@ -41,5 +42,12 @@ backend/scripts/autopilot.ps1
 /tatus
 *.tmp
 *.log
+*.dump
 audit_municipality_keys_output.txt
 *_output.txt
+
+# macOS
+.DS_Store
+
+# Claude Code
+.claude/
