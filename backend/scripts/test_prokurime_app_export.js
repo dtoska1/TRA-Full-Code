@@ -329,6 +329,44 @@ async function run() {
     `Unexpected exact override target: ${JSON.stringify(overrideMatch)}`
   );
 
+  const vauPrimaryMatch = matchAuthorityToMunicipalityAcrossContexts({
+    authority: "Bashkia Vau Dejes",
+    municipalityContexts: [
+      {
+        nameKey: "vau-i-dejes",
+        municipalityTerms: [
+          "VAU I DEJES",
+          "VAU DEJES",
+        ],
+      },
+    ],
+  });
+  assert(vauPrimaryMatch.matched === true, "Expected Vau i Dejes primary authority match");
+  assert(
+    vauPrimaryMatch.municipalityContext?.nameKey === "vau-i-dejes" &&
+      vauPrimaryMatch.match_mode === "primary" &&
+      vauPrimaryMatch.matched_term === "VAU DEJES",
+    `Unexpected Vau i Dejes primary match: ${JSON.stringify(vauPrimaryMatch)}`
+  );
+
+  const vauFalsePositiveGuard = matchAuthorityToMunicipalityAcrossContexts({
+    authority: "Qendra Shendetesore Vau Dejes Shkoder",
+    municipalityContexts: [
+      {
+        nameKey: "vau-i-dejes",
+        municipalityTerms: [
+          "VAU I DEJES",
+          "VAU DEJES",
+        ],
+      },
+    ],
+  });
+  assert(
+    vauFalsePositiveGuard.matched === false &&
+      vauFalsePositiveGuard.reason === "missing_municipality_marker",
+    `Unexpected Vau i Dejes false positive: ${JSON.stringify(vauFalsePositiveGuard)}`
+  );
+
   console.log("Prokurime APP export parser tests passed.");
 }
 

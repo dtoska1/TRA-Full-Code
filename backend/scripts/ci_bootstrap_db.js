@@ -14,6 +14,9 @@ const SQL_FILES = [
   "014_municipality_key_aliases.sql",
   "015_vendime_al_canonical_and_item_provenance.sql",
   "018_source_registry_category_checked_flags.sql",
+  "019_prokurime_records.sql",
+  "020_prokurime_records_schema_align.sql",
+  "021_fix_vau_i_dejes_prokurime_alias.sql",
 ];
 
 function sanitizeSql(sqlText) {

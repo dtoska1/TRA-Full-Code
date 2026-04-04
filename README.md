@@ -152,6 +152,14 @@ This aligns fresh environments with the live `prokurime_records` schema by addin
 
 `created_at` is backfilled from `extracted_at` when possible and then made `NOT NULL DEFAULT now()`.
 
+Run migration `021_fix_vau_i_dejes_prokurime_alias.sql` after `020`:
+
+```powershell
+Get-Content -Raw -Encoding UTF8 .\021_fix_vau_i_dejes_prokurime_alias.sql | docker exec -i tra_postgres psql -U tra -d tra -v ON_ERROR_STOP=1
+```
+
+This adds the explicit municipality alias `vau-dejes` for `vau-i-dejes` so APP export authorities like `Bashkia Vau Dejes` match as primary municipality rows without broadening the shared matcher.
+
 ### 5.2.2) Optional admin-only CHECKED reset (only after Dion confirms)
 
 If category flags were enabled too broadly and you want to reset only `Prokurime` and
