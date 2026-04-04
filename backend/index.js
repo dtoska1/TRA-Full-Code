@@ -28,6 +28,7 @@ dns.setDefaultResultOrder("ipv4first");
 // Scrapers
 const { scrapeTiranaVendime } = require("./scrapers/tiranaVendime");
 const { scrapeGenericDocuments } = require("./scrapers/genericDocuments");
+const { scrapeVauDejesVendime } = require("./scrapers/vauDejesVendime");
 const { scrapeVendimeAl } = require("./scrapers/vendimeAl");
 const {
   scrapeProkurimeAppExport,
@@ -1917,6 +1918,18 @@ async function scrapeVendimeTarget({
   }
   if (host.endsWith("tirana.al")) {
     const r = await scrapeTiranaVendime({ year, limit, urlOverride: targetUrl });
+    return { usedUrl: r.url, items: r.items, meta: null };
+  }
+  if (
+    municipalityKey === "vau-i-dejes" &&
+    (host === "vaudejes.gov.al" || host === "www.vaudejes.gov.al")
+  ) {
+    const r = await scrapeVauDejesVendime({
+      url: targetUrl,
+      year,
+      limit,
+      pageStart,
+    });
     return { usedUrl: r.url, items: r.items, meta: null };
   }
   const r = await scrapeGenericDocuments({ url: targetUrl, limit });

@@ -426,20 +426,22 @@ function extractDocLinksFromHtml({
   });
 
   // 5) last resort: scan raw HTML for doc-ish URLs
-  const re = /(https?:\/\/[^\s"'<>]+|\/wp-content\/uploads\/[^\s"'<>]+)/gi;
-  const raw = html.match(re) || [];
-  for (const x of raw) {
-    const abs = resolveDocumentCandidateUrl(baseUrl, x);
-    if (!abs) continue;
-    if (!looksLikeDoc(abs)) continue;
+  if (out.length === 0) {
+    const re = /(https?:\/\/[^\s"'<>]+|\/wp-content\/uploads\/[^\s"'<>]+)/gi;
+    const raw = html.match(re) || [];
+    for (const x of raw) {
+      const abs = resolveDocumentCandidateUrl(baseUrl, x);
+      if (!abs) continue;
+      if (!looksLikeDoc(abs)) continue;
 
-    const item = buildItem({
-      baseUrl,
-      linkUrl: abs,
-      titleText: pageTitleFallback,
-      sourcePageUrl: sourcePageUrl || baseUrl,
-    });
-    if (item) out.push(item);
+      const item = buildItem({
+        baseUrl,
+        linkUrl: abs,
+        titleText: pageTitleFallback,
+        sourcePageUrl: sourcePageUrl || baseUrl,
+      });
+      if (item) out.push(item);
+    }
   }
 
   return out;
@@ -753,6 +755,10 @@ function extractVendimePostLinksFromListing({ baseUrl, html, maxPosts = 15 }) {
   const $ = cheerio.load(html);
   const links = new Set();
   const vendimeLikePath = /(^|[-_/])vendime(t|ve)?([-_/]|$)/i;
+  const vendimeSupportPath =
+    /(^|[-_/])(projekt-vendimet?|procesi-vendimmarres-i-keshillit|rregjistrat-e-keshillit-bashkiak)([-_/]|$)/i;
+  const vendimeSupportText =
+    /\b(vendime?|projekt vendime?t?|procesi vendimmarr[eë]s i k[eë]shillit|regjistrat e k[eë]shillit bashkiak)\b/i;
 
   $("a[href]").each((_, el) => {
     const href = $(el).attr("href");
@@ -769,7 +775,14 @@ function extractVendimePostLinksFromListing({ baseUrl, html, maxPosts = 15 }) {
     if (/(\/category\/|\/tag\/)/i.test(path)) return;
 
     const low = abs.toLowerCase();
-    if (!vendimeLikePath.test(path)) return;
+    const linkText = cleanText($(el).text());
+    if (
+      !vendimeLikePath.test(path) &&
+      !vendimeSupportPath.test(path) &&
+      !vendimeSupportText.test(linkText)
+    ) {
+      return;
+    }
     if (/\.(png|jpg|jpeg|webp|gif|svg|css|js|map)(\?|#|$)/i.test(low)) return;
 
     links.add(abs);
@@ -1080,14 +1093,13 @@ async function scrapeGenericDocuments({
           html: listingHtml,
           maxPosts: lim,
         }).map((it) => ({ url: it, title: "" }));
-        const needsVendimeFallback = isVendimeCategory && direct.length === 0;
-        const vendimePostLinks = needsVendimeFallback
-          ? extractVendimePostLinksFromListing({
-              baseUrl: listingUrl,
-              html: listingHtml,
-              maxPosts: lim,
-            }).map((it) => ({ url: it, title: "" }))
-          : [];
+        const vendimePostLinks = isVendimeCategory
+        ? extractVendimePostLinksFromListing({
+          baseUrl: listingUrl,
+          html: listingHtml,
+          maxPosts: lim,
+        }).map((it) => ({ url: it, title: "" }))
+        : []; 
         const byUrl = new Map();
         for (const candidate of [...vendimePostLinks, ...postLinks]) {
           const key = String(candidate.url || "").trim().toLowerCase();
