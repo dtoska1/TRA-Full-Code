@@ -71,6 +71,12 @@ export default function RootLayout({
               </p>
             </div>
             <nav aria-label="Navigim i faqes" className="flex items-center gap-4">
+              <Link href="/vendime" className="text-sm font-medium text-slate-200 hover:text-white">
+                Vendime
+              </Link>
+              <Link href="/prokurime" className="text-sm font-medium text-slate-200 hover:text-white">
+                Prokurime
+              </Link>
               <Link href="/konsultime" className="text-sm font-medium text-slate-200 hover:text-white">
                 Konsultime
               </Link>
