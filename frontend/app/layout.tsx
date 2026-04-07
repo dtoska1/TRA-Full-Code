@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import type { ReactNode } from "react";
 import "./globals.css";
 import { buildOpenGraph, resolveMetadataBase } from "./metadata";
@@ -55,7 +56,29 @@ export default function RootLayout({
           dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
         />
       </head>
-      <body>{children}</body>
+      <body>
+        <header className="w-full bg-slate-900 px-4 py-4 sm:px-6">
+          <div className="mx-auto flex max-w-5xl items-center justify-between gap-4">
+            <div>
+              <Link
+                href="/"
+                className="text-xs font-semibold uppercase tracking-widest text-blue-400"
+              >
+                Transparency Radar Albania
+              </Link>
+              <p className="mt-0.5 text-xs text-slate-400">
+                Platforma kombëtare e transparencës bashkiake
+              </p>
+            </div>
+            <nav aria-label="Navigim i faqes" className="flex items-center gap-4">
+              <Link href="/konsultime" className="text-sm font-medium text-slate-200 hover:text-white">
+                Konsultime
+              </Link>
+            </nav>
+          </div>
+        </header>
+        {children}
+      </body>
     </html>
   );
 }

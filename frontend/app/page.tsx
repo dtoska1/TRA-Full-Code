@@ -229,29 +229,6 @@ export default async function HomePage({
 
   return (
     <div className="min-h-screen bg-slate-50">
-      <header className="w-full bg-slate-900 px-4 py-4 sm:px-6">
-        <div className="mx-auto flex max-w-5xl items-center justify-between">
-          <div>
-            <span className="text-xs font-semibold uppercase tracking-widest text-blue-400">
-              Transparency Radar Albania
-            </span>
-            <p className="mt-0.5 text-xs text-slate-400">
-              Platforma kombëtare e transparencës bashkiake
-            </p>
-          </div>
-          <div className="flex items-center gap-3">
-            <span className="text-xs text-slate-500">sq</span>
-            <Link
-              href="/coverage"
-              className="text-xs text-slate-600 hover:text-slate-400"
-              title="Admin Coverage"
-            >
-              🔒
-            </Link>
-          </div>
-        </div>
-      </header>
-
       <main className="mx-auto flex w-full max-w-5xl flex-col gap-6 p-4 pb-10 sm:p-6">
 
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
@@ -330,6 +307,13 @@ export default async function HomePage({
               >
                 <Link href="/status" className="text-sm text-blue-700 underline">
                   Statusi Publik
+                </Link>
+                <Link
+                  href="/coverage"
+                  className="text-xs text-slate-500 underline underline-offset-2 hover:text-slate-700"
+                  title="Admin Coverage"
+                >
+                  🔒
                 </Link>
                 {municipalities.length > 0 ? (
                   <MunicipalityFeedCta
