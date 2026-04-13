@@ -3130,7 +3130,7 @@ app.get("/api/feed", async (req, res) => {
         v.category,
         v.title,
         v.source_url,
-        v.published_date AS published_at,
+        v.published_date::text AS published_at,
         v.created_at,
         v.collected_at,
         COALESCE(att.attachment_count, 0)::int AS attachment_count,
@@ -3347,7 +3347,7 @@ app.get("/api/items/:id", async (req, res) => {
         i.title,
         i.summary,
         i.source_url,
-        i.published_date AS published_at,
+        i.published_date::text AS published_at,
         i.collected_at,
         i.created_at,
         i.updated_at

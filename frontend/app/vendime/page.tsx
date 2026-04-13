@@ -68,6 +68,7 @@ function normalizeYear(input: string | null | undefined): string {
 
 function formatDate(value: string | null): string {
   if (!value) return "Pa date";
+  if (/^\d{4}-\d{2}-\d{2}/.test(value)) return value.slice(0, 10);
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toISOString().slice(0, 10);

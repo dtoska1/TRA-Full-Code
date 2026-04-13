@@ -94,6 +94,8 @@ function parsePublishedDate(value) {
   const raw = cleanText(value);
   if (!raw) return null;
 
+  if (/^\d{4}-\d{2}-\d{2}T/.test(raw)) return raw.slice(0, 10);
+
   let m = raw.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);
   if (m) return `${m[1]}-${m[2]}-${m[3]}`;
 
