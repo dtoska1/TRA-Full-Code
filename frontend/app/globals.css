@@ -4,11 +4,47 @@
 
 :root {
   color-scheme: light;
+  --surface: #f7faf9;
+  --surface-strong: #ffffff;
+  --grid-line: rgba(15, 23, 42, 0.06);
+  --hero-shadow: rgba(15, 23, 42, 0.12);
+  --vendime: #0d9668;
+  --vendime-light: #e7f7f0;
+  --vendime-dark: #085041;
+  --prokurime: #1976d2;
+  --prokurime-light: #e3f2fd;
+  --prokurime-dark: #0d47a1;
+  --konsultime: #d84315;
+  --konsultime-light: #fbe9e7;
+  --konsultime-dark: #bf360c;
+}
+
+html {
+  scroll-behavior: smooth;
 }
 
 body {
   margin: 0;
   min-height: 100vh;
-  background: linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%);
+  background:
+    radial-gradient(circle at top left, rgba(13, 150, 104, 0.08), transparent 28%),
+    radial-gradient(circle at top right, rgba(25, 118, 210, 0.08), transparent 24%),
+    linear-gradient(180deg, #f8fbfa 0%, #edf3f7 48%, #f8fafc 100%);
   color: #0f172a;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+  background-size: 32px 32px;
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.12), transparent 70%);
+}
+
+a {
+  color: inherit;
 }

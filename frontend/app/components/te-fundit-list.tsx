@@ -1,6 +1,8 @@
 "use client";
 
 import { useState } from "react";
+import { formatDate } from "../lib/public-feed";
+import { getVerticalThemeByCategory } from "../lib/verticals";
 
 type FeedItem = {
   id: string;
@@ -11,21 +13,6 @@ type FeedItem = {
   published_at: string | null;
   collected_at: string | null;
 };
-
-function categoryBadgeClass(category: string): string {
-  if (category === "Prokurime") return "bg-amber-100 text-amber-800";
-  if (category === "Konsultime publike") return "bg-green-100 text-green-800";
-  return "bg-blue-100 text-blue-800";
-}
-
-function formatDate(value: string | null | undefined): string {
-  if (!value) return "Pa datë";
-  try {
-    return new Date(value).toISOString().slice(0, 10);
-  } catch {
-    return "Pa datë";
-  }
-}
 
 const PAGE_SIZE = 5;
 
@@ -40,40 +27,47 @@ export default function TeFunditList({ items }: { items: FeedItem[] }) {
 
   return (
     <>
-      <ul className="mt-4 divide-y divide-slate-100">
-        {visibleItems.map((item) => (
-          <li key={item.id} className="py-3">
-            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
-              <span>{formatDate(item.published_at || item.collected_at)}</span>
-              <span
-                className={`rounded-full px-2 py-0.5 text-xs font-medium ${categoryBadgeClass(item.category)}`}
-              >
-                {item.category}
-              </span>
-            </div>
-            <p className="mt-1 text-xs text-slate-500">{item.municipality_name || ""}</p>
-            <p className="mt-0.5 text-sm font-medium leading-snug text-slate-900">
-              {item.source_url ? (
-                <a
-                  href={item.source_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-blue-700 underline"
-                >
-                  {item.title}
-                </a>
-              ) : (
-                item.title
-              )}
-            </p>
-          </li>
-        ))}
+      <ul className="mt-5 space-y-3">
+        {visibleItems.map((item) => {
+          const theme = getVerticalThemeByCategory(item.category);
+
+          return (
+            <li
+              key={item.id}
+              className="rounded-[22px] border border-slate-200 bg-white/90 p-4 shadow-sm"
+            >
+              <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                <span className={`rounded-full px-2.5 py-1 font-semibold ${theme.badgeClass}`}>
+                  {item.category}
+                </span>
+                <span>{formatDate(item.published_at || item.collected_at)}</span>
+              </div>
+              <p className="mt-3 text-xs font-medium uppercase tracking-[0.16em] text-slate-400">
+                {item.municipality_name || "Bashki e pacaktuar"}
+              </p>
+              <p className="mt-2 text-sm font-semibold leading-7 text-slate-950">
+                {item.source_url ? (
+                  <a
+                    href={item.source_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className={`underline underline-offset-4 ${theme.accentTextClass}`}
+                  >
+                    {item.title}
+                  </a>
+                ) : (
+                  item.title
+                )}
+              </p>
+            </li>
+          );
+        })}
       </ul>
       {hasMore && (
         <button
           type="button"
           onClick={() => setVisibleCount((prev) => prev + PAGE_SIZE)}
-          className="mt-4 w-full rounded-lg border border-slate-200 py-2 text-xs font-medium text-slate-500 hover:bg-slate-50 hover:text-slate-700"
+          className="mt-4 w-full rounded-full border border-slate-300 py-2.5 text-xs font-semibold uppercase tracking-[0.18em] text-slate-600 transition hover:bg-slate-50 hover:text-slate-800"
         >
           Shfaq më shumë ({items.length - visibleCount} të mbetura)
         </button>
