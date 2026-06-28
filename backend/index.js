@@ -588,6 +588,398 @@ function hasPdfMagicBytes(buffer) {
   return buffer.slice(0, 5).toString("ascii") === "%PDF-";
 }
 
+function hasZipMagicBytes(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 4) return false;
+  const head = buffer.slice(0, 4).toString("binary");
+  return head === "PK\u0003\u0004" || head === "PK\u0005\u0006" || head === "PK\u0007\b";
+}
+
+function hasOleCompoundMagicBytes(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 8) return false;
+  return buffer.slice(0, 8).equals(Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]));
+}
+
+const SCRAPER_ATTACHMENT_TYPES = {
+  pdf: { extension: "pdf", mimeType: "application/pdf" },
+  doc: { extension: "doc", mimeType: "application/msword" },
+  docx: {
+    extension: "docx",
+    mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  },
+  zip: { extension: "zip", mimeType: "application/zip" },
+};
+const SCRAPER_ATTACHMENT_EXTENSIONS = new Set(Object.keys(SCRAPER_ATTACHMENT_TYPES));
+
+function getAllowlistedAttachmentExtension(fileName) {
+  const match = /\.([a-z0-9]+)$/i.exec(String(fileName || "").split(/[?#]/)[0] || "");
+  if (!match) return null;
+  const ext = match[1].toLowerCase();
+  return SCRAPER_ATTACHMENT_EXTENSIONS.has(ext) ? ext : null;
+}
+
+function safeDecodeUrlPath(value) {
+  const raw = String(value || "");
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
+function getAttachmentExtensionFromUrl(value) {
+  const raw = parseHttpUrl(value);
+  if (!raw) return null;
+
+  let parsed = null;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return null;
+  }
+
+  const pathExt = getAllowlistedAttachmentExtension(safeDecodeUrlPath(parsed.pathname || ""));
+  if (pathExt) return pathExt;
+
+  for (const value of parsed.searchParams.values()) {
+    const paramExt = getAllowlistedAttachmentExtension(safeDecodeUrlPath(value));
+    if (paramExt) return paramExt;
+  }
+
+  return null;
+}
+
+function getAttachmentExtensionFromContentType(contentType) {
+  const normalized = String(contentType || "").split(";")[0].trim().toLowerCase();
+  if (!normalized) return null;
+  if (normalized === "application/pdf") return "pdf";
+  if (normalized === "application/msword") return "doc";
+  if (normalized === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
+    return "docx";
+  }
+  if (normalized === "application/zip" || normalized === "application/x-zip-compressed") {
+    return "zip";
+  }
+  return null;
+}
+
+function detectScrapedAttachmentType({ sourceUrl, contentType, buffer }) {
+  const urlExt = getAttachmentExtensionFromUrl(sourceUrl);
+  const contentExt = getAttachmentExtensionFromContentType(contentType);
+  const candidates = [urlExt, contentExt].filter(Boolean);
+
+  if (candidates.includes("pdf") || hasPdfMagicBytes(buffer)) {
+    return hasPdfMagicBytes(buffer) ? SCRAPER_ATTACHMENT_TYPES.pdf : null;
+  }
+
+  if (candidates.includes("doc")) {
+    return hasOleCompoundMagicBytes(buffer) ? SCRAPER_ATTACHMENT_TYPES.doc : null;
+  }
+
+  if (candidates.includes("docx")) {
+    return hasZipMagicBytes(buffer) ? SCRAPER_ATTACHMENT_TYPES.docx : null;
+  }
+
+  if (candidates.includes("zip")) {
+    return hasZipMagicBytes(buffer) ? SCRAPER_ATTACHMENT_TYPES.zip : null;
+  }
+
+  if (hasZipMagicBytes(buffer)) return SCRAPER_ATTACHMENT_TYPES.zip;
+  return null;
+}
+
+function isLikelyDocumentAttachmentUrl(value) {
+  const raw = parseHttpUrl(value);
+  if (!raw) return false;
+
+  let parsed = null;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return false;
+  }
+
+  const lowerUrl = raw.toLowerCase();
+  const lowerPath = safeDecodeUrlPath(parsed.pathname || "").toLowerCase();
+  if (getAttachmentExtensionFromUrl(raw)) return true;
+  if (/\/(download|downloads|file|files|attachment|attachments)(\/|$)/i.test(lowerPath)) {
+    return true;
+  }
+
+  for (const [key, value] of parsed.searchParams.entries()) {
+    const normalizedKey = String(key || "").toLowerCase();
+    const normalizedValue = safeDecodeUrlPath(value).toLowerCase();
+    if (getAllowlistedAttachmentExtension(normalizedValue)) return true;
+    if (["download", "file", "attachment", "attachment_id", "document"].includes(normalizedKey)) {
+      return true;
+    }
+  }
+
+  return /\.(pdf|doc|docx|zip)(\?|#|$)/i.test(lowerUrl);
+}
+
+function parseContentLengthBytes(value) {
+  const raw = String(value || "").trim();
+  if (!/^\d+$/.test(raw)) return null;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+
+async function readResponseBufferWithLimit(response, maxBytes) {
+  const chunks = [];
+  let total = 0;
+
+  const appendChunk = (chunk) => {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += buffer.length;
+    if (total > maxBytes) {
+      const err = new Error(`Attachment exceeds MANUAL_UPLOAD_MAX_BYTES (${maxBytes}).`);
+      err.code = "ATTACHMENT_TOO_LARGE";
+      err.byteSize = total;
+      throw err;
+    }
+    chunks.push(buffer);
+  };
+
+  if (!response.body) {
+    appendChunk(Buffer.from(await response.arrayBuffer()));
+    return Buffer.concat(chunks, total);
+  }
+
+  if (typeof response.body.getReader === "function") {
+    const reader = response.body.getReader();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        appendChunk(value);
+      }
+    } catch (err) {
+      try {
+        await reader.cancel();
+      } catch {}
+      throw err;
+    } finally {
+      try {
+        reader.releaseLock();
+      } catch {}
+    }
+    return Buffer.concat(chunks, total);
+  }
+
+  for await (const chunk of response.body) {
+    appendChunk(chunk);
+  }
+
+  return Buffer.concat(chunks, total);
+}
+
+function formatScrapeAttachmentError(err) {
+  if (err?.name === "AbortError") return `timeout ${SCRAPE_REQUEST_TIMEOUT_MS}ms`;
+  if (err?.code === "ATTACHMENT_TOO_LARGE") {
+    return `oversize ${err.byteSize || "unknown"} > ${MANUAL_UPLOAD_MAX_BYTES}`;
+  }
+  return safePublicErrorMessage(err, "attachment_archive_failed");
+}
+
+async function fetchScrapedDocumentBuffer(sourceUrl) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SCRAPE_REQUEST_TIMEOUT_MS);
+  try {
+    const response = await fetch(sourceUrl, {
+      method: "GET",
+      redirect: "follow",
+      signal: controller.signal,
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        Accept:
+          "application/pdf, application/msword, application/vnd.openxmlformats-officedocument.wordprocessingml.document, application/zip, application/octet-stream;q=0.9, */*;q=0.8",
+      },
+    });
+
+    if (!response.ok) {
+      return {
+        status: "skipped",
+        reason: `http_${response.status}`,
+      };
+    }
+
+    const contentLength = parseContentLengthBytes(response.headers.get("content-length"));
+    if (contentLength !== null && contentLength > MANUAL_UPLOAD_MAX_BYTES) {
+      return {
+        status: "skipped",
+        reason: `oversize_header_${contentLength}`,
+        byteSize: contentLength,
+      };
+    }
+
+    const contentType = String(response.headers.get("content-type") || "").trim();
+    const buffer = await readResponseBufferWithLimit(response, MANUAL_UPLOAD_MAX_BYTES);
+    const attachmentType = detectScrapedAttachmentType({
+      sourceUrl,
+      contentType,
+      buffer,
+    });
+    if (!attachmentType) {
+      return {
+        status: "skipped",
+        reason: "unsupported_document_type",
+        byteSize: buffer.length,
+      };
+    }
+
+    return {
+      status: "fetched",
+      buffer,
+      attachmentType,
+      byteSize: buffer.length,
+    };
+  } catch (err) {
+    return {
+      status: "failed",
+      reason: formatScrapeAttachmentError(err),
+      byteSize: Number.isFinite(Number(err?.byteSize)) ? Number(err.byteSize) : null,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function insertScrapedDocumentAttachment({
+  itemId,
+  sourceUrl,
+  buffer,
+  sha256,
+  attachmentType,
+}) {
+  let client = null;
+  let stagedFilePath = null;
+  try {
+    const fileUuid = crypto.randomUUID();
+    const storedFileName = `${fileUuid}.${attachmentType.extension}`;
+    const storageUri = buildLocalUploadStorageUri(storedFileName);
+    stagedFilePath = path.resolve(UPLOADS_DIR, storedFileName);
+
+    client = await pool.connect();
+    await client.query("BEGIN");
+
+    const attachmentInsert = await client.query(
+      `
+      INSERT INTO attachments (
+        item_id,
+        file_name,
+        mime_type,
+        size_bytes,
+        storage_uri,
+        sha256,
+        source_url
+      )
+      VALUES (
+        $1, $2, $3, $4, $5, $6, $7
+      )
+      ON CONFLICT (item_id, sha256) DO NOTHING
+      RETURNING id
+      `,
+      [
+        itemId,
+        storedFileName,
+        attachmentType.mimeType,
+        buffer.length,
+        storageUri,
+        sha256,
+        sourceUrl,
+      ]
+    );
+
+    if (attachmentInsert.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return {
+        status: "duplicate",
+        byteSize: buffer.length,
+      };
+    }
+
+    await fsp.mkdir(UPLOADS_DIR, { recursive: true });
+    await fsp.writeFile(stagedFilePath, buffer);
+    await client.query("COMMIT");
+
+    return {
+      status: "stored",
+      attachmentId: attachmentInsert.rows[0].id,
+      byteSize: buffer.length,
+    };
+  } catch (err) {
+    try {
+      if (client) await client.query("ROLLBACK");
+    } catch {}
+    if (stagedFilePath) {
+      try {
+        await fsp.unlink(stagedFilePath);
+      } catch {}
+    }
+    throw err;
+  } finally {
+    if (client) client.release();
+  }
+}
+
+async function archiveScrapedDocumentAttachment({ itemId, sourceUrl }) {
+  const normalizedItemId = String(itemId || "").trim();
+  const normalizedSourceUrl = parseHttpUrl(sourceUrl);
+  if (!isUuid(normalizedItemId) || !normalizedSourceUrl) {
+    return { status: "skipped", reason: "invalid_item_or_url" };
+  }
+  if (!isLikelyDocumentAttachmentUrl(normalizedSourceUrl)) {
+    return { status: "skipped", reason: "not_document_url" };
+  }
+
+  const fetched = await fetchScrapedDocumentBuffer(normalizedSourceUrl);
+  if (fetched.status !== "fetched") return fetched;
+
+  const sha256 = crypto.createHash("sha256").update(fetched.buffer).digest("hex");
+  return insertScrapedDocumentAttachment({
+    itemId: normalizedItemId,
+    sourceUrl: normalizedSourceUrl,
+    buffer: fetched.buffer,
+    sha256,
+    attachmentType: fetched.attachmentType,
+  });
+}
+
+async function archiveScrapedDocumentAttachmentBestEffort({ itemId, sourceUrl, context }) {
+  try {
+    const result = await archiveScrapedDocumentAttachment({ itemId, sourceUrl });
+    if (result.status === "failed") {
+      console.warn(
+        `[scrape.attachments] failed context=${truncateLogJson(context)} source_url=${truncateLogJson(
+          sourceUrl
+        )} reason=${result.reason || "attachment_archive_failed"} bytes=${result.byteSize || "-"}`
+      );
+    }
+    if (
+      result.status === "skipped" &&
+      !["not_document_url", "invalid_item_or_url"].includes(result.reason)
+    ) {
+      console.warn(
+        `[scrape.attachments] skip context=${truncateLogJson(context)} source_url=${truncateLogJson(
+          sourceUrl
+        )} reason=${result.reason || "skipped"} bytes=${result.byteSize || "-"}`
+      );
+    }
+    return result;
+  } catch (err) {
+    console.warn(
+      `[scrape.attachments] failed context=${truncateLogJson(context)} source_url=${truncateLogJson(
+        sourceUrl
+      )} err=${safePublicErrorMessage(err, "attachment_archive_failed")}`
+    );
+    return {
+      status: "failed",
+      reason: safePublicErrorMessage(err, "attachment_archive_failed"),
+    };
+  }
+}
+
 function manualDedupKeyV1({
   municipalityId,
   category,
@@ -627,7 +1019,7 @@ function buildAdminFilePath(attachmentId) {
 
 function resolveLocalUploadPath(storageUri) {
   const uri = String(storageUri || "").trim();
-  const match = /^local:\/\/uploads\/([0-9a-f-]+\.pdf)$/i.exec(uri);
+  const match = /^local:\/\/uploads\/([0-9a-f-]+\.(?:pdf|doc|docx|zip))$/i.exec(uri);
   if (!match) return null;
   const fileName = match[1];
   const resolvedPath = path.resolve(UPLOADS_DIR, fileName);
@@ -642,9 +1034,15 @@ function sanitizeDownloadName(fileName, attachmentId) {
     .replace(/[^\w.\-]+/g, "_")
     .replace(/^_+/, "")
     .slice(0, 120);
-  if (cleaned && cleaned.toLowerCase().endsWith(".pdf")) return cleaned;
+  if (cleaned && getAllowlistedAttachmentExtension(cleaned)) return cleaned;
   if (cleaned) return `${cleaned}.pdf`;
   return `${attachmentId}.pdf`;
+}
+
+function getContentDispositionMode(mimeType) {
+  return String(mimeType || "").trim().toLowerCase() === "application/pdf"
+    ? "inline"
+    : "attachment";
 }
 
 function escapeMeiliFilterValue(value) {
@@ -1263,19 +1661,89 @@ function extractProkurimeRecordFields({ record, fallbackProcedureRef }) {
   };
 }
 
-async function findItemIdByDedupKey({ municipalityId, dedupKey }) {
-  const found = await pool.query(
-    `
-    SELECT id
-    FROM items
-    WHERE municipality_id = $1
-      AND category = 'Prokurime'
-      AND dedup_key = $2
-    LIMIT 1
-    `,
-    [municipalityId, dedupKey]
-  );
-  return found.rowCount ? found.rows[0].id : null;
+async function findScraperItemId({ municipalityId, category, dedupKey, sourceUrl }) {
+  const normalizedMunicipalityId = String(municipalityId || "").trim();
+  const normalizedCategory = String(category || "").trim();
+  const normalizedDedupKey = String(dedupKey || "").trim();
+  const normalizedSourceUrl = String(sourceUrl || "").trim();
+
+  if (normalizedMunicipalityId && normalizedCategory && normalizedDedupKey) {
+    const foundByDedup = await pool.query(
+      `
+      SELECT id
+      FROM items
+      WHERE municipality_id = $1
+        AND category = $2
+        AND dedup_key = $3
+      LIMIT 1
+      `,
+      [normalizedMunicipalityId, normalizedCategory, normalizedDedupKey]
+    );
+    if (foundByDedup.rowCount) return foundByDedup.rows[0].id;
+  }
+
+  if (normalizedMunicipalityId && normalizedCategory && normalizedSourceUrl) {
+    const foundBySource = await pool.query(
+      `
+      SELECT id
+      FROM items
+      WHERE municipality_id = $1
+        AND category = $2
+        AND source_url = $3
+      LIMIT 1
+      `,
+      [normalizedMunicipalityId, normalizedCategory, normalizedSourceUrl]
+    );
+    if (foundBySource.rowCount) return foundBySource.rows[0].id;
+  }
+
+  return null;
+}
+
+async function archiveScrapedDocumentAttachmentForScraperItem({
+  municipalityId,
+  category,
+  dedupKey,
+  sourceUrl,
+  context,
+}) {
+  const normalizedSourceUrl = parseHttpUrl(sourceUrl);
+  if (!normalizedSourceUrl || !isLikelyDocumentAttachmentUrl(normalizedSourceUrl)) {
+    return { status: "skipped", reason: "not_document_url" };
+  }
+
+  try {
+    const itemId = await findScraperItemId({
+      municipalityId,
+      category,
+      dedupKey,
+      sourceUrl: normalizedSourceUrl,
+    });
+    if (!itemId) {
+      console.warn(
+        `[scrape.attachments] skip context=${truncateLogJson(context)} source_url=${truncateLogJson(
+          normalizedSourceUrl
+        )} reason=item_not_found`
+      );
+      return { status: "skipped", reason: "item_not_found" };
+    }
+
+    return archiveScrapedDocumentAttachmentBestEffort({
+      itemId,
+      sourceUrl: normalizedSourceUrl,
+      context: `${context || "scrape"} item_id=${itemId}`,
+    });
+  } catch (err) {
+    console.warn(
+      `[scrape.attachments] failed context=${truncateLogJson(context)} source_url=${truncateLogJson(
+        normalizedSourceUrl
+      )} err=${safePublicErrorMessage(err, "attachment_archive_failed")}`
+    );
+    return {
+      status: "failed",
+      reason: safePublicErrorMessage(err, "attachment_archive_failed"),
+    };
+  }
 }
 
 async function upsertProkurimeRecord({
@@ -2928,11 +3396,11 @@ app.get("/api/public/files/:id", async (req, res) => {
         message: "File not found.",
       });
     }
-    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Type", file.mimeType);
     res.setHeader("Content-Length", String(file.sizeBytes));
     res.setHeader(
       "Content-Disposition",
-      `inline; filename="${file.fileName.replace(/"/g, "")}"`
+      `${getContentDispositionMode(file.mimeType)}; filename="${file.fileName.replace(/"/g, "")}"`
     );
     res.setHeader("X-Content-Type-Options", "nosniff");
     const stream = fs.createReadStream(file.localPath);
@@ -2969,11 +3437,11 @@ app.get("/api/admin/files/:id", requireAdmin, async (req, res) => {
         message: "File not found.",
       });
     }
-    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Type", file.mimeType);
     res.setHeader("Content-Length", String(file.sizeBytes));
     res.setHeader(
       "Content-Disposition",
-      `inline; filename="${file.fileName.replace(/"/g, "")}"`
+      `${getContentDispositionMode(file.mimeType)}; filename="${file.fileName.replace(/"/g, "")}"`
     );
     res.setHeader("X-Content-Type-Options", "nosniff");
     const stream = fs.createReadStream(file.localPath);
@@ -3492,6 +3960,14 @@ app.post("/api/scrape/tirana/vendime", async (req, res) => {
         ]
       );
 
+      await archiveScrapedDocumentAttachmentForScraperItem({
+        municipalityId,
+        category,
+        dedupKey,
+        sourceUrl,
+        context: `route=/api/scrape/tirana/vendime category=${category} municipality_id=${municipalityId}`,
+      });
+
       if (ins.rowCount === 1) inserted++;
       else skipped++;
     }
@@ -4001,9 +4477,11 @@ app.post("/api/scrape/run", async (req, res) => {
             });
 
             try {
-              const itemId = await findItemIdByDedupKey({
+              const itemId = await findScraperItemId({
                 municipalityId: rowMunicipalityId,
+                category,
                 dedupKey,
+                sourceUrl,
               });
               if (!itemId) {
                 console.warn(
@@ -4041,6 +4519,14 @@ app.post("/api/scrape/run", async (req, res) => {
                 )}`
               );
             }
+
+            await archiveScrapedDocumentAttachmentForScraperItem({
+              municipalityId: rowMunicipalityId,
+              category,
+              dedupKey,
+              sourceUrl,
+              context: `category=${category} municipality_id=${rowMunicipalityId}`,
+            });
 
             if (action === "inserted") {
               inserted += 1;
@@ -4400,6 +4886,14 @@ app.post("/api/scrape/run", async (req, res) => {
               systemUserId,
             });
 
+            await archiveScrapedDocumentAttachmentForScraperItem({
+              municipalityId,
+              category,
+              dedupKey,
+              sourceUrl,
+              context: `category=${category} municipality_id=${municipalityId}`,
+            });
+
             if (action === "inserted") {
               inserted++;
               sourceSummary.inserted++;
@@ -4678,6 +5172,14 @@ app.post("/api/scrape/run", async (req, res) => {
             defaultStatus,
             systemUserId,
             sourceKind,
+          });
+
+          await archiveScrapedDocumentAttachmentForScraperItem({
+            municipalityId,
+            category: "Vendime",
+            dedupKey,
+            sourceUrl,
+            context: `category=Vendime municipality_id=${municipalityId} source_kind=${sourceKind}`,
           });
 
           if (action === "inserted") {
