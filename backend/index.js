@@ -34,6 +34,7 @@ const { scrapeShkoderVendime } = require("./scrapers/shkoderVendime");
 const { scrapeDurresVendime } = require("./scrapers/durresVendime");
 const { scrapePogradecVendime } = require("./scrapers/pogradecVendime");
 const { scrapeShkoderKonsultime } = require("./scrapers/shkoderKonsultime");
+const { scrapePogradecKonsultime } = require("./scrapers/pogradecKonsultime");
 const {
   scrapeProkurimeAppExport,
   buildProkurimeAppDedupKey,
@@ -2458,6 +2459,18 @@ async function scrapeKonsultimeTarget({
     (host === "bashkiashkoder.gov.al" || host === "www.bashkiashkoder.gov.al")
   ) {
     const r = await scrapeShkoderKonsultime({
+      url: targetUrl,
+      year,
+      limit,
+      pageStart,
+    });
+    return { usedUrl: r.url, items: r.items, meta: r.meta || null };
+  }
+  if (
+    municipalityKey === "pogradec" &&
+    (host === "bashkiapogradec.gov.al" || host === "www.bashkiapogradec.gov.al")
+  ) {
+    const r = await scrapePogradecKonsultime({
       url: targetUrl,
       year,
       limit,
