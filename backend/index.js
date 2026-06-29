@@ -5462,9 +5462,22 @@ app.post("/api/scrape/run", async (req, res) => {
       return controlledFailure ? 502 : 500;
     })();
 
+    const errorMunicipality =
+      String(
+        municipality ||
+          konsultimeNationwideState?.municipality_name_key ||
+          vendimeNationwideState?.municipality_name_key ||
+          ""
+      ).trim() ||
+      (municipalityId ? String(municipalityId) : null);
+
     return res.status(statusCode).json({
       ok: false,
       error: "scrape_error",
+      category,
+      offset,
+      municipality_id: municipalityId || null,
+      municipality: errorMunicipality,
       message: safePublicErrorMessage(err, "Scrape failed"),
       scrape_error:
         errorType === "TIMEOUT"
