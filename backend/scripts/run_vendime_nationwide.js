@@ -10,6 +10,13 @@ const {
   shouldSleep,
   backoffOn429,
 } = require("../lib/runnerProgress");
+const {
+  appendFailedOffset,
+  buildFailureInfo,
+  isSkippableScrapeFailure,
+  normalizeFailedOffsets,
+  sanitizeMessage,
+} = require("../lib/runnerFailure");
 
 const API_BASE = process.env.API_BASE || process.env.SMOKE_BASE_URL || "http://localhost:5050";
 
@@ -47,11 +54,6 @@ function hasArg(args, key) {
   return Object.prototype.hasOwnProperty.call(args, key);
 }
 
-function sanitizeMessage(message) {
-  const raw = String(message || "").replace(/[\r\n\t]+/g, " ").trim();
-  return raw.slice(0, 400);
-}
-
 function normalizeProgress(existing, year) {
   const nextOffset = existing.next_offset === null
     ? null
@@ -72,6 +74,7 @@ function normalizeProgress(existing, year) {
     total_seen: Math.max(0, toInt(existing.total_seen, toInt(existing.parsed_rows_total_sum, 0))),
     total_inserted: Math.max(0, toInt(existing.total_inserted, 0)),
     total_skipped: Math.max(0, toInt(existing.total_skipped, 0)),
+    failed_offsets: normalizeFailedOffsets(existing.failed_offsets),
     last_ok_utc: existing.last_ok_utc || existing.updatedAt || null,
     last_error: lastError,
   };
@@ -82,6 +85,7 @@ async function run() {
   const year = Math.max(2000, Math.min(2100, toInt(args.year, new Date().getUTCFullYear())));
   const limit = Math.max(1, Math.min(200, toInt(args.limit, 80)));
   const sleepMs = Math.max(0, toInt(args.sleep_ms, 1200));
+  const maxTimeouts = Math.max(1, toInt(args.max_timeouts, 10));
   const maxRuntimeMs = Math.max(0, toInt(args.max_runtime_ms, 0));
   const resume = toBool(args.resume, true);
   const forcePublish = toBool(args.force_publish, false);
@@ -105,6 +109,7 @@ async function run() {
     total_seen: 0,
     total_inserted: 0,
     total_skipped: 0,
+    failed_offsets: [],
     last_ok_utc: null,
     last_error: null,
   };
@@ -135,6 +140,54 @@ async function run() {
   }
 
   let retryAttempt = 0;
+  let runFailedOffsets = 0;
+
+  function recordFailedOffsetSkip({ response, payload, message }) {
+    const failure = buildFailureInfo({
+      statusCode: response?.status,
+      payload,
+      fallbackMessage: message,
+    });
+    const failedAt = nowIso();
+    const nextOffset = offset + 1;
+
+    progress.next_offset = nextOffset;
+    progress.last_error = {
+      type: failure.type,
+      message: failure.message,
+      at_utc: failedAt,
+    };
+    appendFailedOffset(progress, {
+      year,
+      category: "Vendime",
+      offset,
+      next_offset: nextOffset,
+      limit,
+      municipality_id: failure.municipality_id,
+      municipality: failure.municipality,
+      status: failure.status,
+      type: failure.type,
+      message: failure.message,
+      at_utc: failedAt,
+    });
+    saveProgress(progressPath, progress);
+
+    runFailedOffsets += 1;
+    console.warn(
+      `year=${year} offset=${offset} limit=${limit} page_start=${pageStart} failed_offset_skip=true municipality_id=${failure.municipality_id || "unknown"} municipality=${failure.municipality || "unknown"} status=${failure.status || "unknown"} type=${failure.type} run_timeouts=${runFailedOffsets}/${maxTimeouts} next_offset=${nextOffset}`
+    );
+
+    offset = nextOffset;
+    retryAttempt = 0;
+    if (runFailedOffsets >= maxTimeouts) {
+      console.warn(
+        `year=${year} max_timeouts_reached=true run_timeouts=${runFailedOffsets} max_timeouts=${maxTimeouts} next_offset=${nextOffset} progress_file=${progressPath}`
+      );
+      return true;
+    }
+    return false;
+  }
+
   while (true) {
     if (maxRuntimeMs > 0 && Date.now() - startedAtMs >= maxRuntimeMs) {
       progress.next_offset = offset;
@@ -193,6 +246,16 @@ async function run() {
       payload = JSON.parse(text);
     } catch {
       const message = "Non-JSON response";
+      if (
+        isSkippableScrapeFailure({
+          statusCode: response.status,
+          payload: null,
+          message,
+        })
+      ) {
+        if (recordFailedOffsetSkip({ response, payload: null, message })) return;
+        continue;
+      }
       progress.next_offset = offset;
       progress.last_error = {
         type: `HTTP_${response.status}`,
@@ -205,6 +268,16 @@ async function run() {
 
     if (!response.ok || !payload?.ok) {
       const message = sanitizeMessage(payload?.message || payload?.error || "Request failed");
+      if (
+        isSkippableScrapeFailure({
+          statusCode: response.status,
+          payload,
+          message,
+        })
+      ) {
+        if (recordFailedOffsetSkip({ response, payload, message })) return;
+        continue;
+      }
       progress.next_offset = offset;
       progress.last_error = {
         type: `HTTP_${response.status}`,

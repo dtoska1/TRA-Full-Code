@@ -10,12 +10,17 @@ const {
   shouldSleep,
   backoffOn429,
 } = require("../lib/runnerProgress");
+const {
+  appendFailedOffset,
+  buildFailureInfo,
+  isSkippableScrapeFailure,
+  normalizeFailedOffsets,
+} = require("../lib/runnerFailure");
 
 const API_BASE = process.env.API_BASE || process.env.SMOKE_BASE_URL || "http://localhost:5050";
 const TIMEOUT_RETRY_BACKOFF_MS = [5000, 15000, 45000];
 const UUID_RE =
   /\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/i;
-const TIMEOUT_NETWORK_CODES = new Set(["ETIMEDOUT", "ECONNRESET", "EAI_AGAIN"]);
 
 function parseArgs(argv) {
   const out = {};
@@ -92,9 +97,6 @@ function isTimeoutLikeError({ statusCode, errorCode, message, scrapeError, lastE
   const status = Number(statusCode);
   if (status === 504) return true;
 
-  const code = String(errorCode || "").trim().toUpperCase();
-  if (TIMEOUT_NETWORK_CODES.has(code)) return true;
-
   const type = String(lastErrorType || "").trim().toUpperCase();
   if (type === "TIMEOUT" || type === "HTTP_504") return true;
 
@@ -147,6 +149,7 @@ function normalizeProgress(existing, year) {
     last_blocked_municipality_id:
       String(existing.last_blocked_municipality_id || "").trim() || null,
     last_blocked_at_utc: String(existing.last_blocked_at_utc || "").trim() || null,
+    failed_offsets: normalizeFailedOffsets(existing.failed_offsets),
     last_ok_utc: existing.last_ok_utc || existing.updatedAt || null,
     last_error: lastError,
   };
@@ -187,6 +190,7 @@ async function run() {
     blocked_by_municipality: {},
     last_blocked_municipality_id: null,
     last_blocked_at_utc: null,
+    failed_offsets: [],
     last_ok_utc: null,
     last_error: null,
   };
@@ -223,7 +227,7 @@ async function run() {
   }
 
   let retryAttempt = 0;
-  let runTimeouts = 0;
+  let runFailedOffsets = 0;
   let stopReason = "completed";
 
   function printFinalSummary(reason) {
@@ -232,10 +236,37 @@ async function run() {
     );
   }
 
-  function recordBlockedSoftSkip({ municipalityId, reasonType, reasonMessage }) {
+  function appendCurrentFailedOffset({
+    nextOffset,
+    municipalityId,
+    municipality,
+    status,
+    type,
+    message,
+    atUtc,
+  }) {
+    appendFailedOffset(progress, {
+      year,
+      category: "Konsultime publike",
+      offset,
+      next_offset: nextOffset,
+      limit,
+      municipality_id: municipalityId,
+      municipality,
+      status,
+      type,
+      message,
+      at_utc: atUtc,
+    });
+  }
+
+  function recordBlockedSoftSkip({ municipalityId, municipality, reasonType, reasonMessage }) {
     const blockedMunicipalityId = municipalityId || "unknown";
     const blockedAt = nowIso();
     const forcedNextOffset = offset + 1;
+    const message = sanitizeMessage(
+      `${String(reasonType || "HTTP_403").trim() || "HTTP_403"} soft-skip at offset=${offset} municipality_id=${blockedMunicipalityId} ${String(reasonMessage || "").trim()}`
+    );
 
     progress.blocked_total += 1;
     progress.blocked_by_municipality[blockedMunicipalityId] =
@@ -245,18 +276,78 @@ async function run() {
     progress.next_offset = forcedNextOffset;
     progress.last_error = {
       type: "HTTP_403",
-      message: sanitizeMessage(
-        `${String(reasonType || "HTTP_403").trim() || "HTTP_403"} soft-skip at offset=${offset} municipality_id=${blockedMunicipalityId} ${String(reasonMessage || "").trim()}`
-      ),
+      message,
       at_utc: blockedAt,
     };
+    appendCurrentFailedOffset({
+      nextOffset: forcedNextOffset,
+      municipalityId: blockedMunicipalityId,
+      municipality,
+      status: 502,
+      type: "HTTP_403",
+      message,
+      atUtc: blockedAt,
+    });
     saveProgress(progressPath, progress);
 
+    runFailedOffsets += 1;
     offset = forcedNextOffset;
     retryAttempt = 0;
     console.warn(
-      `year=${year} offset=${offset - 1} limit=${limit} blocked_skip=true municipality_id=${blockedMunicipalityId} blocked_total=${progress.blocked_total} next_offset=${forcedNextOffset}`
+      `year=${year} offset=${offset - 1} limit=${limit} blocked_skip=true failed_offset_skip=true municipality_id=${blockedMunicipalityId} municipality=${municipality || "unknown"} blocked_total=${progress.blocked_total} failed_offsets=${runFailedOffsets}/${maxTimeouts} next_offset=${forcedNextOffset}`
     );
+    if (runFailedOffsets >= maxTimeouts) {
+      console.warn(
+        `year=${year} max_timeouts_reached=true failed_offsets=${runFailedOffsets} max_timeouts=${maxTimeouts} next_offset=${forcedNextOffset} progress_file=${progressPath}`
+      );
+      stopReason = "max_timeouts_reached";
+      printFinalSummary(stopReason);
+      return true;
+    }
+    return false;
+  }
+
+  function recordGenericFailedOffsetSkip({ response, payload, message }) {
+    const failure = buildFailureInfo({
+      statusCode: response?.status,
+      payload,
+      fallbackMessage: message,
+    });
+    const failedAt = nowIso();
+    const forcedNextOffset = offset + 1;
+
+    progress.next_offset = forcedNextOffset;
+    progress.last_error = {
+      type: failure.type,
+      message: failure.message,
+      at_utc: failedAt,
+    };
+    appendCurrentFailedOffset({
+      nextOffset: forcedNextOffset,
+      municipalityId: failure.municipality_id,
+      municipality: failure.municipality,
+      status: failure.status,
+      type: failure.type,
+      message: failure.message,
+      atUtc: failedAt,
+    });
+    saveProgress(progressPath, progress);
+
+    runFailedOffsets += 1;
+    offset = forcedNextOffset;
+    retryAttempt = 0;
+    console.warn(
+      `year=${year} offset=${offset - 1} limit=${limit} failed_offset_skip=true municipality_id=${failure.municipality_id || "unknown"} municipality=${failure.municipality || "unknown"} status=${failure.status || "unknown"} type=${failure.type} failed_offsets=${runFailedOffsets}/${maxTimeouts} next_offset=${forcedNextOffset}`
+    );
+    if (runFailedOffsets >= maxTimeouts) {
+      console.warn(
+        `year=${year} max_timeouts_reached=true failed_offsets=${runFailedOffsets} max_timeouts=${maxTimeouts} next_offset=${forcedNextOffset} progress_file=${progressPath}`
+      );
+      stopReason = "max_timeouts_reached";
+      printFinalSummary(stopReason);
+      return true;
+    }
+    return false;
   }
 
   while (true) {
@@ -290,6 +381,7 @@ async function run() {
       let scrapeError = "";
       let lastErrorType = "";
       let municipalityIdFromError = null;
+      let municipalityNameFromError = null;
 
       try {
         response = await fetch(url.toString(), {
@@ -310,80 +402,6 @@ async function run() {
           err?.scrape_error,
           err?.timeout_label
         );
-
-        const timeoutLike = isTimeoutLikeError({
-          statusCode,
-          errorCode,
-          message,
-          scrapeError,
-          lastErrorType,
-        });
-        const blockedLike = isBlockedLikeError({
-          statusCode,
-          errorCode,
-          message,
-          scrapeError,
-          lastErrorType,
-        });
-
-        if (blockedLike) {
-          recordBlockedSoftSkip({
-            municipalityId: municipalityIdFromError || "unknown",
-            reasonType: errorCode || lastErrorType || "HTTP_403",
-            reasonMessage: message || scrapeError || "Blocked by bot/Cloudflare protection",
-          });
-          shouldContinueOuterLoop = true;
-          break;
-        }
-
-        if (timeoutLike && timeoutAttempt < TIMEOUT_RETRY_BACKOFF_MS.length) {
-          const backoffMs = TIMEOUT_RETRY_BACKOFF_MS[timeoutAttempt];
-          console.warn(
-            `year=${year} offset=${offset} limit=${limit} timeout_retry_attempt=${timeoutAttempt + 1}/${TIMEOUT_RETRY_BACKOFF_MS.length} backoff_ms=${backoffMs}`
-          );
-          await shouldSleep(backoffMs);
-          continue;
-        }
-
-        if (timeoutLike) {
-          const municipalityId = municipalityIdFromError || "unknown";
-          const timeoutAt = nowIso();
-          const forcedNextOffset = offset + 1;
-
-          progress.timeouts_total += 1;
-          progress.timeouts_by_municipality[municipalityId] =
-            Math.max(0, toInt(progress.timeouts_by_municipality[municipalityId], 0)) + 1;
-          progress.last_timeout_municipality_id = municipalityId;
-          progress.last_timeout_at_utc = timeoutAt;
-          progress.next_offset = forcedNextOffset;
-          progress.last_error = {
-            type: "TIMEOUT",
-            message: sanitizeMessage(
-              `Timeout after retries at offset=${offset} municipality_id=${municipalityId}`
-            ),
-            at_utc: timeoutAt,
-          };
-          saveProgress(progressPath, progress);
-
-          runTimeouts += 1;
-          offset = forcedNextOffset;
-          retryAttempt = 0;
-          console.warn(
-            `year=${year} offset=${offset - 1} limit=${limit} timeout_skip=true municipality_id=${municipalityId} run_timeouts=${runTimeouts}/${maxTimeouts} next_offset=${forcedNextOffset}`
-          );
-
-          if (runTimeouts >= maxTimeouts) {
-            console.warn(
-              `year=${year} max_timeouts_reached=true run_timeouts=${runTimeouts} max_timeouts=${maxTimeouts} next_offset=${forcedNextOffset} progress_file=${progressPath}`
-            );
-            stopReason = "max_timeouts_reached";
-            printFinalSummary(stopReason);
-            return;
-          }
-
-          shouldContinueOuterLoop = true;
-          break;
-        }
 
         progress.next_offset = offset;
         progress.last_error = {
@@ -429,16 +447,20 @@ async function run() {
         scrapeError = "";
         lastErrorType = "";
         municipalityIdFromError = extractMunicipalityIdFromText(text, message);
+        municipalityNameFromError = null;
       } else {
         message = sanitizeMessage(payload?.message || payload?.error || `HTTP ${statusCode}: Request failed`);
         scrapeError = sanitizeMessage(payload?.scrape_error || "");
         lastErrorType = String(payload?.last_error_type || "").trim().toUpperCase();
         errorCode = String(payload?.cause || "").trim().toUpperCase();
-        municipalityIdFromError = extractMunicipalityIdFromText(
-          payload?.message,
-          payload?.scrape_error,
-          payload?.last_error_type
-        );
+        municipalityIdFromError =
+          String(payload?.municipality_id || "").trim() ||
+          extractMunicipalityIdFromText(
+            payload?.message,
+            payload?.scrape_error,
+            payload?.last_error_type
+          );
+        municipalityNameFromError = String(payload?.municipality || "").trim() || null;
       }
 
       const requestFailed = !response.ok || !payload?.ok;
@@ -459,11 +481,14 @@ async function run() {
         });
 
         if (blockedLike) {
-          recordBlockedSoftSkip({
+          if (recordBlockedSoftSkip({
             municipalityId: municipalityIdFromError || "unknown",
+            municipality: municipalityNameFromError,
             reasonType: lastErrorType || `HTTP_${statusCode}`,
             reasonMessage: message || scrapeError || "Blocked by bot/Cloudflare protection",
-          });
+          })) {
+            return;
+          }
           shouldContinueOuterLoop = true;
           break;
         }
@@ -495,24 +520,46 @@ async function run() {
             ),
             at_utc: timeoutAt,
           };
+          appendCurrentFailedOffset({
+            nextOffset: forcedNextOffset,
+            municipalityId,
+            municipality: municipalityNameFromError,
+            status: statusCode,
+            type: "TIMEOUT",
+            message: progress.last_error.message,
+            atUtc: timeoutAt,
+          });
           saveProgress(progressPath, progress);
 
-          runTimeouts += 1;
+          runFailedOffsets += 1;
           offset = forcedNextOffset;
           retryAttempt = 0;
           console.warn(
-            `year=${year} offset=${offset - 1} limit=${limit} timeout_skip=true municipality_id=${municipalityId} run_timeouts=${runTimeouts}/${maxTimeouts} next_offset=${forcedNextOffset}`
+            `year=${year} offset=${offset - 1} limit=${limit} timeout_skip=true failed_offset_skip=true municipality_id=${municipalityId} municipality=${municipalityNameFromError || "unknown"} failed_offsets=${runFailedOffsets}/${maxTimeouts} next_offset=${forcedNextOffset}`
           );
 
-          if (runTimeouts >= maxTimeouts) {
+          if (runFailedOffsets >= maxTimeouts) {
             console.warn(
-              `year=${year} max_timeouts_reached=true run_timeouts=${runTimeouts} max_timeouts=${maxTimeouts} next_offset=${forcedNextOffset} progress_file=${progressPath}`
+              `year=${year} max_timeouts_reached=true failed_offsets=${runFailedOffsets} max_timeouts=${maxTimeouts} next_offset=${forcedNextOffset} progress_file=${progressPath}`
             );
             stopReason = "max_timeouts_reached";
             printFinalSummary(stopReason);
             return;
           }
 
+          shouldContinueOuterLoop = true;
+          break;
+        }
+
+        if (
+          isSkippableScrapeFailure({
+            statusCode,
+            payload,
+            message,
+            errorCode,
+          })
+        ) {
+          if (recordGenericFailedOffsetSkip({ response, payload, message })) return;
           shouldContinueOuterLoop = true;
           break;
         }
