@@ -1,0 +1,16 @@
+{
+  "name": "transparency-radar-albania",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "setup": "npm install && npm install --prefix backend && npm install --prefix frontend && docker-compose up -d && wait-on tcp:localhost:5433 tcp:localhost:6379 tcp:localhost:7700 --timeout 60000",
+    "dev": "wait-on tcp:localhost:5433 tcp:localhost:6379 tcp:localhost:7700 --timeout 30000 && concurrently --kill-others --prefix \"[{name}]\" --names \"backend,frontend\" --prefix-colors \"yellow.bold,cyan.bold\" \"cd backend && npm run dev 2>&1 | tee ../backend.log\" \"cd frontend && npm run dev 2>&1 | tee ../frontend.log\"",
+    "stop": "docker-compose down",
+    "logs:backend": "tail -f backend.log",
+    "logs:frontend": "tail -f frontend.log"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "wait-on": "^8.0.1"
+  }
+}

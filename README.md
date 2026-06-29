@@ -3,6 +3,26 @@
 
 Full-stack transparency platform for Albania: scrapers + API + database + public site to collect and publish municipal documents across all **61 municipalities**.
 
+## Quick Start
+
+```bash
+# First time only (fresh clone):
+npm run setup           # installs deps, starts Docker, waits until ready
+
+# Daily dev:
+npm run dev             # backend :5050 + frontend :3000, color-coded logs — Ctrl+C to stop
+
+# Bring Docker down (end of day):
+npm run stop
+
+# See one service's logs in a second terminal:
+npm run logs:backend    # or: npm run logs:frontend
+```
+
+Open http://localhost:3000 once `npm run dev` is running.
+
+---
+
 ## About / Outcomes
 
 - **Improved access to public information:** Citizens, CSOs, and journalists get a centralized, user-friendly platform aggregating municipal decisions, procurement data, and consultations, reducing fragmentation and increasing transparency.

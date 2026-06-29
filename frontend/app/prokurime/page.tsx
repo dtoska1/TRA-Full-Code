@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import ProkurimeSpendSection from "../components/prokurime-spend-section";
 import VerticalFeedPage from "../components/vertical-feed-page";
 import { QueryMap, firstValue, normalizeMunicipality, normalizePage, normalizeSort, normalizeYear } from "../lib/public-feed";
 import { VERTICAL_THEMES } from "../lib/verticals";
@@ -67,6 +68,14 @@ export default async function ProkurimePage({
       theme={VERTICAL_THEMES.prokurime}
       title="Prokurime dhe njoftime publike"
       description="Ndjek njoftimet e prokurimit për bashkitë, filtro sipas vendndodhjes ose vitit dhe lëviz nëpër faqet e rezultateve pa humbur filtrat."
+      summary={
+        <ProkurimeSpendSection
+          eyebrow="Përmbledhje e shpenzimeve"
+          title="Shpenzime prokurimi"
+          description="Një pamje e shpejtë e kategorive ku përqendrohet vlera e prokurimeve për bashkinë dhe vitin që zgjedh."
+          className="mt-6"
+        />
+      }
     />
   );
 }

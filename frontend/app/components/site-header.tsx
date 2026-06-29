@@ -6,11 +6,6 @@ const mainLinks = [
   { href: "/konsultime", label: "Konsultime" },
 ];
 
-const operatorLinks = [
-  { href: "/coverage", label: "Mbulimi" },
-  { href: "/admin/new-item", label: "Shto dokument" },
-];
-
 export default function SiteHeader() {
   return (
     <header className="sticky top-0 z-30 border-b border-[#2AA198]/30 bg-slate-950/95 text-white shadow-sm backdrop-blur">
@@ -37,28 +32,19 @@ export default function SiteHeader() {
                 </Link>
               ))}
             </nav>
+              <Link
+                href="/#kerko"
+                className="inline-flex items-center justify-center rounded-full border border-[#2AA198]/40 bg-[#103B37] px-4 py-2 text-sm font-semibold text-[#D6FFFA] transition hover:bg-[#15524D]"
+              >
+                Kërko
+              </Link>
             <Link
-              href="/#kerko"
-              className="inline-flex items-center justify-center rounded-full border border-[#2AA198]/40 bg-[#103B37] px-4 py-2 text-sm font-semibold text-[#D6FFFA] transition hover:bg-[#15524D]"
+              href="/admin"
+              className="inline-flex items-center justify-center rounded-full border border-white/15 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10 hover:text-white"
             >
-              Kërko
+              Admin
             </Link>
           </div>
-        </div>
-
-        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-white/10 pt-3">
-          <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Lidhje pune</p>
-          <nav aria-label="Navigim pune" className="flex flex-wrap items-center gap-4">
-            {operatorLinks.map((item) => (
-              <Link
-                key={item.href}
-                href={item.href}
-                className="text-xs font-medium text-slate-400 underline-offset-4 transition hover:text-slate-200 hover:underline"
-              >
-                {item.label}
-              </Link>
-            ))}
-          </nav>
         </div>
       </div>
     </header>

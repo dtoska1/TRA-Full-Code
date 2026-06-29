@@ -7,8 +7,9 @@ const categoryLinks = [
 ];
 
 const aboutLinks = [
-  { href: "/#rreth-platformes", label: "Rreth platformës" },
-  { href: "/#kerko", label: "Kërko në platformë" },
+  { href: "/rreth-projektit", label: "Rreth Projektit" },
+  { href: "/baza-ligjore", label: "Baza Ligjore" },
+  { href: "/metodologjia", label: "Metodologjia" },
   { href: "/status", label: "Statusi publik" },
 ];
 
@@ -24,6 +25,14 @@ export default function Footer() {
           <p className="mt-4 max-w-xl text-sm leading-7 text-slate-400">
             Një hapësirë publike për të ndjekur dokumentet bashkiake, për të krahasuar zhvillimet
             mes bashkive dhe për të forcuar llogaridhënien vendore.
+          </p>
+          <p className="mt-4 max-w-xl text-xs leading-6 text-slate-500">
+            Informacioni në këtë platformë vjen nga burime publike institucionale. Burimet
+            origjinale mbeten referenca ligjore zyrtare. Shih{" "}
+            <Link href="/baza-ligjore" className="underline transition hover:text-slate-300">
+              Bazën Ligjore
+            </Link>{" "}
+            për detaje.
           </p>
         </div>
 

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { VERTICAL_THEMES } from "../lib/verticals";
 
 type MunicipalityOption = {
   name_key: string;
@@ -114,9 +115,18 @@ function formatBucketDisplay(
 
 export default function ProkurimeSpendCard({
   municipalities,
+  eyebrow = "Shpenzime Prokurimi",
+  title = "Ku shkojnë paratë publike?",
+  description = "Shiko si shpërndahet vlera e prokurimeve sipas kategorive kryesore për bashkinë dhe vitin që zgjedh.",
+  className = "",
 }: {
   municipalities: MunicipalityOption[];
+  eyebrow?: string;
+  title?: string;
+  description?: string;
+  className?: string;
 }) {
+  const theme = VERTICAL_THEMES.prokurime;
   const normalizedMunicipalities = useMemo(
     () =>
       municipalities
@@ -238,16 +248,28 @@ export default function ProkurimeSpendCard({
   }, [listRows, totalAmount]);
 
   return (
-    <section className="w-full rounded-3xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
-      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Shpenzime Prokurimi</p>
-      <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <label className="text-xs font-medium uppercase tracking-wide text-slate-600">
+    <section
+      className={`w-full rounded-[32px] border bg-white p-6 shadow-soft sm:p-8 ${theme.accentBorderClass} ${className}`.trim()}
+    >
+      <div className="flex items-center gap-3">
+        <span className={`h-3 w-3 rounded-full ${theme.accentClass}`} aria-hidden="true" />
+        <p className={`text-xs font-semibold uppercase tracking-[0.24em] ${theme.accentTextClass}`}>
+          {eyebrow}
+        </p>
+      </div>
+      <h2 className="mt-4 text-3xl font-semibold tracking-tight text-slate-950 sm:text-4xl">
+        {title}
+      </h2>
+      <p className="mt-3 max-w-3xl text-sm leading-7 text-slate-600 sm:text-base">{description}</p>
+
+      <div className="mt-8 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <label className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
           Bashkia
           <select
             value={selectedMunicipality}
             onChange={(event) => setSelectedMunicipality(normalizeMunicipality(event.target.value))}
-            className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
-            aria-label="Municipality"
+            className="mt-2 w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-900 outline-none transition focus:border-prokurime focus:ring-2 focus:ring-prokurime/15"
+            aria-label="Bashkia"
           >
             {normalizedMunicipalities.map((item) => (
               <option key={item.name_key} value={item.name_key}>
@@ -257,13 +279,13 @@ export default function ProkurimeSpendCard({
           </select>
         </label>
 
-        <label className="text-xs font-medium uppercase tracking-wide text-slate-600">
+        <label className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
           Viti
           <select
             value={selectedYear}
             onChange={(event) => setSelectedYear(String(event.target.value || "").trim())}
-            className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
-            aria-label="Year"
+            className="mt-2 w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-900 outline-none transition focus:border-prokurime focus:ring-2 focus:ring-prokurime/15"
+            aria-label="Viti"
           >
             <option value="">Viti i fundit</option>
             {yearOptions.map((year) => (
@@ -276,12 +298,12 @@ export default function ProkurimeSpendCard({
       </div>
 
       {error ? (
-        <p className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
+        <p className="mt-5 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
           {error}
         </p>
       ) : null}
 
-      {loading ? <p className="mt-4 text-sm text-slate-600">Duke ngarkuar të dhënat...</p> : null}
+      {loading ? <p className="mt-5 text-sm text-slate-600">Duke ngarkuar të dhënat...</p> : null}
 
       {!mounted ? (
         <div className="mt-6 animate-pulse" aria-hidden="true">
@@ -299,16 +321,26 @@ export default function ProkurimeSpendCard({
         </div>
       ) : !loading && !error ? (
         <div className="mt-6">
-          <p className="text-sm font-medium text-slate-600">Shpenzime totale të prokurimit</p>
-          <p className="mt-1 text-4xl font-semibold leading-none text-slate-900">
-            {formatAmount(totalAmount)} {data?.currency || "ALL"}
-          </p>
+          <div className={`rounded-[24px] border bg-prokurime-light/60 p-5 ${theme.accentBorderClass}`}>
+            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">
+              Shpenzime totale të prokurimit
+            </p>
+            <p className={`mt-3 text-4xl font-semibold leading-none ${theme.accentTextClass}`}>
+              {formatAmount(totalAmount)} {data?.currency || "ALL"}
+            </p>
+          </div>
 
           {hasSpendData ? (
-            <div className="mt-6 grid grid-cols-1 gap-5 lg:grid-cols-[220px_minmax(0,1fr)] lg:items-start">
-              <div className="mx-auto">
-                <svg viewBox="0 0 180 180" width="180" height="180" role="img" aria-label="Grafiku i kategorive kryesore">
-                  <circle cx="90" cy="90" r="72" fill="none" stroke="#e2e8f0" strokeWidth="18" />
+            <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-[220px_minmax(0,1fr)] lg:items-start">
+              <div className="mx-auto rounded-[24px] border border-slate-200 bg-slate-50 p-4">
+                <svg
+                  viewBox="0 0 180 180"
+                  width="180"
+                  height="180"
+                  role="img"
+                  aria-label="Grafiku i kategorive kryesore"
+                >
+                  <circle cx="90" cy="90" r="72" fill="none" stroke="#dbeafe" strokeWidth="18" />
                   {pieSlices.map((slice, index) => (
                     <circle
                       key={slice.key}
@@ -336,14 +368,14 @@ export default function ProkurimeSpendCard({
               </div>
 
               <div>
-                <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-700">
+                <h3 className={`text-sm font-semibold uppercase tracking-[0.22em] ${theme.accentTextClass}`}>
                   Ku shkon shpenzimi i prokurimeve
                 </h3>
-                <p className="mt-2 text-sm text-slate-600">
+                <p className="mt-3 text-sm leading-7 text-slate-600">
                   Këto kategori tregojnë ku është përqendruar pjesa më e madhe e vlerës së
                   prokurimeve për këtë bashki në vitin e zgjedhur.
                 </p>
-                <ul className="mt-3 space-y-2">
+                <ul className="mt-4 space-y-3">
                   {listRows.map((bucket, index) => {
                     const display = formatBucketDisplay(bucket);
                     const color = PIE_COLORS[index % PIE_COLORS.length];
@@ -351,7 +383,7 @@ export default function ProkurimeSpendCard({
                     return (
                       <li
                         key={`${bucket.cpv_code}-${index}`}
-                        className="rounded-lg border border-slate-200 p-3 transition-colors"
+                        className="rounded-[22px] border border-slate-200 bg-white p-4 transition-colors"
                         onMouseEnter={() => setActiveIndex(index)}
                         onMouseLeave={() => setActiveIndex(null)}
                         style={
@@ -376,7 +408,7 @@ export default function ProkurimeSpendCard({
                             {formatAmount(bucket.amount)} ALL ({formatShare(bucket.amount, totalAmount)})
                           </p>
                         </div>
-                        <p className="mt-1 text-xs text-slate-500">{display.secondary}</p>
+                        <p className="mt-2 text-xs text-slate-500">{display.secondary}</p>
                       </li>
                     );
                   })}
@@ -384,12 +416,12 @@ export default function ProkurimeSpendCard({
               </div>
             </div>
           ) : (
-            <p className="mt-6 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+            <p className="mt-6 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
               Nuk ka të dhëna për këtë vit.
             </p>
           )}
 
-          <p className="mt-4 text-xs text-slate-500">Burimi: app.gov.al</p>
+          <p className="mt-5 text-xs text-slate-500">Burimi: app.gov.al</p>
         </div>
       ) : null}
     </section>

@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { CategoryCard, SearchResultCard, SectionHeading, StatCard } from "./components/public-cards";
+import ProkurimeSpendSection from "./components/prokurime-spend-section";
 import TeFunditList from "./components/te-fundit-list";
 import {
   FeedItem,
@@ -311,6 +312,12 @@ export default async function HomePage({
           )}
         </section>
       </section>
+
+      <ProkurimeSpendSection
+        eyebrow="Shpenzimet publike"
+        title="Ku shkojnë paratë publike?"
+        description="Ky vizualizim tregon se si shpërndahet vlera e prokurimeve sipas kategorive kryesore, për të ndihmuar qytetarët të shohin më qartë prioritetet e shpenzimit publik."
+      />
 
       <section
         id="rreth-platformes"

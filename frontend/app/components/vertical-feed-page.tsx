@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import Link from "next/link";
 import { FeedCard, FeedPagination, SectionHeading } from "./public-cards";
 import {
@@ -18,11 +19,13 @@ export default async function VerticalFeedPage({
   theme,
   title,
   description,
+  summary,
 }: {
   searchParams: Promise<QueryMap>;
   theme: VerticalTheme;
   title: string;
   description: string;
+  summary?: ReactNode;
 }) {
   const query = await searchParams;
   const selectedMunicipality = normalizeMunicipality(firstValue(query, "municipality"));
@@ -148,6 +151,8 @@ export default async function VerticalFeedPage({
           ) : null}
         </div>
       </section>
+
+      {summary ? summary : null}
 
       <section className="mt-6 rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
         <div className="flex flex-col gap-2 border-b border-slate-200 pb-5 sm:flex-row sm:items-end sm:justify-between">
