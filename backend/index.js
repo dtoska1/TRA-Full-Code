@@ -37,6 +37,7 @@ const { scrapeShkoderKonsultime } = require("./scrapers/shkoderKonsultime");
 const { scrapePogradecKonsultime } = require("./scrapers/pogradecKonsultime");
 const { scrapeDurresKonsultime } = require("./scrapers/durresKonsultime");
 const { scrapeVloreKonsultime } = require("./scrapers/vloreKonsultime");
+const { scrapeTiranaKonsultime } = require("./scrapers/tiranaKonsultime");
 const {
   scrapeProkurimeAppExport,
   buildProkurimeAppDedupKey,
@@ -2497,6 +2498,18 @@ async function scrapeKonsultimeTarget({
     (host === "vlora.gov.al" || host === "www.vlora.gov.al")
   ) {
     const r = await scrapeVloreKonsultime({
+      url: targetUrl,
+      year,
+      limit,
+      pageStart,
+    });
+    return { usedUrl: r.url, items: r.items, meta: r.meta || null };
+  }
+  if (
+    municipalityKey === "tirane" &&
+    (host === "tirana.al" || host === "www.tirana.al")
+  ) {
+    const r = await scrapeTiranaKonsultime({
       url: targetUrl,
       year,
       limit,
