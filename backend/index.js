@@ -36,6 +36,7 @@ const { scrapePogradecVendime } = require("./scrapers/pogradecVendime");
 const { scrapeShkoderKonsultime } = require("./scrapers/shkoderKonsultime");
 const { scrapePogradecKonsultime } = require("./scrapers/pogradecKonsultime");
 const { scrapeDurresKonsultime } = require("./scrapers/durresKonsultime");
+const { scrapeVloreKonsultime } = require("./scrapers/vloreKonsultime");
 const {
   scrapeProkurimeAppExport,
   buildProkurimeAppDedupKey,
@@ -2484,6 +2485,18 @@ async function scrapeKonsultimeTarget({
     (host === "durres.gov.al" || host === "www.durres.gov.al")
   ) {
     const r = await scrapeDurresKonsultime({
+      url: targetUrl,
+      year,
+      limit,
+      pageStart,
+    });
+    return { usedUrl: r.url, items: r.items, meta: r.meta || null };
+  }
+  if (
+    municipalityKey === "vlore" &&
+    (host === "vlora.gov.al" || host === "www.vlora.gov.al")
+  ) {
+    const r = await scrapeVloreKonsultime({
       url: targetUrl,
       year,
       limit,
