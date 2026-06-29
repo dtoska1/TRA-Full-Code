@@ -30,6 +30,9 @@ const { scrapeTiranaVendime } = require("./scrapers/tiranaVendime");
 const { scrapeGenericDocuments } = require("./scrapers/genericDocuments");
 const { scrapeVauDejesVendime } = require("./scrapers/vauDejesVendime");
 const { scrapeVendimeAl } = require("./scrapers/vendimeAl");
+const { scrapeShkoderVendime } = require("./scrapers/shkoderVendime");
+const { scrapeDurresVendime } = require("./scrapers/durresVendime");
+const { scrapePogradecVendime } = require("./scrapers/pogradecVendime");
 const {
   scrapeProkurimeAppExport,
   buildProkurimeAppDedupKey,
@@ -2384,9 +2387,46 @@ async function scrapeVendimeTarget({
     });
     return { usedUrl: r.url, items: r.items, meta: r.meta || null };
   }
-  if (host.endsWith("tirana.al")) {
+  if (
+    municipalityKey === "tirane" &&
+    (host === "tirana.al" || host === "www.tirana.al")
+  ) {
     const r = await scrapeTiranaVendime({ year, limit, urlOverride: targetUrl });
-    return { usedUrl: r.url, items: r.items, meta: null };
+    return { usedUrl: r.url, items: r.items, meta: r.meta || null };
+  }
+  if (
+    municipalityKey === "shkoder" &&
+    (host === "bashkiashkoder.gov.al" || host === "www.bashkiashkoder.gov.al")
+  ) {
+    const r = await scrapeShkoderVendime({
+      url: targetUrl,
+      year,
+      limit,
+      pageStart,
+    });
+    return { usedUrl: r.url, items: r.items, meta: r.meta || null };
+  }
+  if (
+    municipalityKey === "durres" &&
+    (host === "durres.gov.al" || host === "www.durres.gov.al")
+  ) {
+    const r = await scrapeDurresVendime({
+      url: targetUrl,
+      year,
+      limit,
+    });
+    return { usedUrl: r.url, items: r.items, meta: r.meta || null };
+  }
+  if (
+    municipalityKey === "pogradec" &&
+    (host === "bashkiapogradec.gov.al" || host === "www.bashkiapogradec.gov.al")
+  ) {
+    const r = await scrapePogradecVendime({
+      url: targetUrl,
+      year,
+      limit,
+    });
+    return { usedUrl: r.url, items: r.items, meta: r.meta || null };
   }
   if (
     municipalityKey === "vau-i-dejes" &&
@@ -5069,6 +5109,9 @@ app.post("/api/scrape/run", async (req, res) => {
                 ...it,
                 source_kind: "official",
                 source_base_url: officialSummary.used_url,
+                custom_official_scraper: Boolean(
+                  officialResult.meta?.custom_official_scraper
+                ),
               }))
             );
           } catch (officialErr) {
@@ -5118,7 +5161,9 @@ app.post("/api/scrape/run", async (req, res) => {
             continue;
           }
 
-          if (!looksLikeVendim(title, sourceUrl)) {
+          const bypassLooksLikeVendim =
+            sourceKind === "official" && it.custom_official_scraper === true;
+          if (!bypassLooksLikeVendim && !looksLikeVendim(title, sourceUrl)) {
             skipped++;
             sourceSummary.skipped = (sourceSummary.skipped || 0) + 1;
             skipped_not_vendim++;

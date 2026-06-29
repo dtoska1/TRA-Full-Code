@@ -6,6 +6,10 @@ const NAV_TIMEOUT_MS = 45000;
 const FETCH_TIMEOUT_MS = 25000;
 const RETRY_ATTEMPTS = 2;
 const RETRY_BACKOFF_MS = 1200;
+const DEFAULT_INDEX_URL =
+  "https://tirana.al/kategoria-e-publikimit/vendime-keshilli-bashkiak-77";
+const SOURCE_ORIGIN = "tirana.al";
+const CHALLENGE_MARKERS = ["Just a moment", "cf-chl", "challenge-platform", "cf-browser-verification"];
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -30,10 +34,15 @@ function normalizeTitle(s) {
 function isLikelyDocumentUrl(href) {
   const s = String(href || "").toLowerCase();
   return (
-    /\.(pdf|doc|docx|rtf|xls|xlsx)(\?|#|$)/i.test(s) ||
+    /\.(pdf|doc|docx|rtf|xls|xlsx|zip)(\?|#|$)/i.test(s) ||
     /[?&](download|file|attachment_id)=/i.test(s) ||
     /\/download\/?/i.test(s)
   );
+}
+
+function hasChallengeMarkup(html) {
+  const source = String(html || "");
+  return CHALLENGE_MARKERS.some((marker) => source.includes(marker));
 }
 
 async function getHtmlWithPlaywright(url) {
@@ -73,7 +82,11 @@ async function getHtmlWithPlaywright(url) {
     ]).catch(() => {});
 
     await page.waitForLoadState("networkidle", { timeout: 3000 }).catch(() => {});
-    return await page.content();
+    const html = await page.content();
+    if (hasChallengeMarkup(html)) {
+      throw new Error("Tirana bot-detection challenge returned instead of page content");
+    }
+    return html;
   } finally {
     await browser.close();
   }
@@ -96,10 +109,114 @@ async function getHtmlWithFetch(url) {
     }
 
     const arrayBuffer = await res.arrayBuffer();
-    return Buffer.from(arrayBuffer).toString("utf8");
+    const html = Buffer.from(arrayBuffer).toString("utf8");
+    if (hasChallengeMarkup(html)) {
+      throw new Error("Tirana bot-detection challenge returned instead of page content");
+    }
+    return html;
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function getHtml(url) {
+  let html = null;
+  let lastError = null;
+  let method = null;
+
+  for (let attempt = 1; attempt <= RETRY_ATTEMPTS; attempt++) {
+    try {
+      html = await getHtmlWithPlaywright(url);
+      method = "playwright";
+      break;
+    } catch (err) {
+      lastError = err;
+      if (attempt < RETRY_ATTEMPTS) {
+        await sleep(RETRY_BACKOFF_MS * attempt);
+      }
+    }
+  }
+
+  if (!html) {
+    try {
+      html = await getHtmlWithFetch(url);
+      method = "fetch_fallback";
+    } catch (fallbackErr) {
+      const first = String(lastError?.message || "unknown");
+      const second = String(fallbackErr?.message || "unknown");
+      throw new Error(`Tirana scrape failed. Playwright: ${first}. HTTP fallback: ${second}`);
+    }
+  }
+
+  return { html, method };
+}
+
+function makeAbsolute(baseUrl, href) {
+  try {
+    return new URL(href, baseUrl).toString();
+  } catch {
+    return null;
+  }
+}
+
+function isDirectYearListingUrl(url, year) {
+  try {
+    const parsed = new URL(url);
+    const path = String(parsed.pathname || "").toLowerCase();
+    return path.includes(String(year)) && !path.endsWith("-77");
+  } catch {
+    return false;
+  }
+}
+
+function discoverYearUrlFromIndexHtml(html, indexUrl, year) {
+  const $ = cheerio.load(html);
+  const candidates = [];
+  const yearText = String(year);
+
+  $("a[href]").each((_, a) => {
+    const href = $(a).attr("href");
+    const abs = makeAbsolute(indexUrl, href);
+    if (!abs) return;
+    let parsed = null;
+    try {
+      parsed = new URL(abs);
+    } catch {
+      return;
+    }
+    if (parsed.hostname.toLowerCase() !== SOURCE_ORIGIN) return;
+
+    const text = $(a).text().replace(/\s+/g, " ").trim().toLowerCase();
+    let pathText = String(parsed.pathname || "").toLowerCase();
+    try {
+      pathText = decodeURIComponent(pathText).toLowerCase();
+    } catch {}
+    const haystack = `${text} ${pathText}`;
+    if (!haystack.includes(yearText)) return;
+    if (!haystack.includes("vendime") && !haystack.includes("keshill")) return;
+
+    let score = 0;
+    if (text.includes(yearText)) score += 20;
+    if (haystack.includes("vendime-te-keshillit-bashkiak")) score += 30;
+    if (haystack.includes("keshillit-bashkiak")) score += 10;
+    candidates.push({ url: abs, score });
+  });
+
+  candidates.sort((a, b) => b.score - a.score || a.url.localeCompare(b.url));
+  return candidates[0]?.url || null;
+}
+
+async function resolveYearListingUrl({ indexUrl, year }) {
+  if (isDirectYearListingUrl(indexUrl, year)) {
+    return { url: indexUrl, indexMethod: null };
+  }
+
+  const index = await getHtml(indexUrl);
+  const discovered = discoverYearUrlFromIndexHtml(index.html, indexUrl, year);
+  if (!discovered) {
+    throw new Error(`Tirana index did not expose a Vendime year URL for ${year}`);
+  }
+  return { url: discovered, indexMethod: index.method };
 }
 
 function parseItemsFromHtml(html, baseUrl) {
@@ -117,10 +234,11 @@ function parseItemsFromHtml(html, baseUrl) {
 
     const title = linkEl.text().trim();
     const href = linkEl.attr("href");
+    const abs = makeAbsolute(baseUrl, href);
 
-    if (!title || !href) return;
+    if (!title || !abs) return;
 
-    const key = `${title}|${href}`;
+    const key = `${title}|${abs}`;
     if (seen.has(key)) return;
     seen.add(key);
 
@@ -131,7 +249,7 @@ function parseItemsFromHtml(html, baseUrl) {
       title,
       summary: null,
       title_normalized: normalizeTitle(title),
-      source_url: href, // index.js resolves absolute URLs.
+      source_url: abs,
     });
   });
 
@@ -162,7 +280,7 @@ function parseItemsFromHtml(html, baseUrl) {
       title,
       summary: null,
       title_normalized: normalizeTitle(title),
-      source_url: href,
+      source_url: abs,
     });
   });
 
@@ -170,41 +288,38 @@ function parseItemsFromHtml(html, baseUrl) {
 }
 
 async function scrapeTiranaVendime({ year = 2026, limit = 50, urlOverride = null }) {
-  const url =
-    urlOverride ||
-    `https://tirana.al/kategoria-e-publikimit/vendime-te-keshillit-bashkiak-${year}-4290`;
-
-  let html = null;
-  let lastError = null;
-  let method = null;
-
-  for (let attempt = 1; attempt <= RETRY_ATTEMPTS; attempt++) {
-    try {
-      html = await getHtmlWithPlaywright(url);
-      method = "playwright";
-      break;
-    } catch (err) {
-      lastError = err;
-      if (attempt < RETRY_ATTEMPTS) {
-        await sleep(RETRY_BACKOFF_MS * attempt);
-      }
-    }
-  }
-
-  if (!html) {
-    try {
-      html = await getHtmlWithFetch(url);
-      method = "fetch_fallback";
-    } catch (fallbackErr) {
-      const first = String(lastError?.message || "unknown");
-      const second = String(fallbackErr?.message || "unknown");
-      throw new Error(`Tirana scrape failed. Playwright: ${first}. HTTP fallback: ${second}`);
-    }
-  }
-
+  const indexUrl = urlOverride || DEFAULT_INDEX_URL;
+  const resolved = await resolveYearListingUrl({ indexUrl, year });
+  const url = resolved.url;
+  const page = await getHtml(url);
   const lim = Math.max(1, Math.min(200, Number(limit) || 50));
-  const items = parseItemsFromHtml(html, url).slice(0, lim);
-  return { url, method, items };
+  const items = parseItemsFromHtml(page.html, url)
+    .filter((item) => {
+      const itemYear = Number.parseInt(String(item.published_date || "").slice(0, 4), 10);
+      return Number.isFinite(itemYear) ? itemYear === Number(year) : true;
+    })
+    .slice(0, lim)
+    .map((item) => ({
+      ...item,
+      source_page_url: url,
+      source_origin: SOURCE_ORIGIN,
+    }));
+
+  if (items.length === 0) {
+    throw new Error(`Tirana official scraper returned zero rows for ${year}`);
+  }
+
+  return {
+    url,
+    method: page.method,
+    items,
+    meta: {
+      custom_official_scraper: true,
+      index_url: indexUrl,
+      index_method: resolved.indexMethod,
+      source_origin: SOURCE_ORIGIN,
+    },
+  };
 }
 
 module.exports = { scrapeTiranaVendime };
