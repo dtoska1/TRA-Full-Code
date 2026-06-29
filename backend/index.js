@@ -33,6 +33,7 @@ const { scrapeVendimeAl } = require("./scrapers/vendimeAl");
 const { scrapeShkoderVendime } = require("./scrapers/shkoderVendime");
 const { scrapeDurresVendime } = require("./scrapers/durresVendime");
 const { scrapePogradecVendime } = require("./scrapers/pogradecVendime");
+const { scrapeShkoderKonsultime } = require("./scrapers/shkoderKonsultime");
 const {
   scrapeProkurimeAppExport,
   buildProkurimeAppDedupKey,
@@ -2444,6 +2445,38 @@ async function scrapeVendimeTarget({
   return { usedUrl: r.url, items: r.items, meta: null };
 }
 
+async function scrapeKonsultimeTarget({
+  targetUrl,
+  year,
+  limit,
+  municipalityKey = null,
+  pageStart = 1,
+}) {
+  const host = getHost(targetUrl);
+  if (
+    municipalityKey === "shkoder" &&
+    (host === "bashkiashkoder.gov.al" || host === "www.bashkiashkoder.gov.al")
+  ) {
+    const r = await scrapeShkoderKonsultime({
+      url: targetUrl,
+      year,
+      limit,
+      pageStart,
+    });
+    return { usedUrl: r.url, items: r.items, meta: r.meta || null };
+  }
+
+  const r = await scrapeGenericDocuments({
+    targetUrl,
+    year,
+    limit,
+    municipalityKey,
+    pageStart,
+    category: "Konsultime publike",
+  });
+  return { usedUrl: r.usedUrl || r.url, items: r.items, meta: r.meta || null };
+}
+
 async function upsertVendimeItem({
   municipalityId,
   title,
@@ -4664,13 +4697,12 @@ app.post("/api/scrape/run", async (req, res) => {
         (async () => {
           const systemUserId = await getSystemUserId();
           const municipalityKey = await getMunicipalityNameKeyById(municipalityId);
-          const baselineResult = await scrapeGenericDocuments({
+          const baselineResult = await scrapeKonsultimeTarget({
             targetUrl: baselineTargetUrl,
             year,
             limit,
             municipalityKey,
             pageStart,
-            category,
           });
           const baselineSummary = {
             used_url: baselineResult.usedUrl || baselineResult.url || baselineTargetUrl,
