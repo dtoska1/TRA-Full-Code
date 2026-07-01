@@ -1,6 +1,7 @@
 "use strict";
 
 const cheerio = require("cheerio");
+const { isLikelyDocumentAttachmentUrl } = require("../lib/documentAttachments");
 const {
   classifyKind,
   cleanText,
@@ -90,6 +91,73 @@ function normalizeVloreUrl(href, baseUrl = DEFAULT_LISTING_URL) {
   } catch {
     return null;
   }
+}
+
+function normalizeVloreDocumentUrl(href, baseUrl = DEFAULT_LISTING_URL) {
+  const url = makeAbsolute(baseUrl, href);
+  if (!url) return null;
+
+  try {
+    const parsed = new URL(url);
+    if (!isVloreHost(parsed.hostname.toLowerCase())) return null;
+    parsed.hostname = SOURCE_ORIGIN;
+    parsed.hash = "";
+    const normalizedUrl = parsed.toString();
+    return isLikelyDocumentAttachmentUrl(normalizedUrl) ? normalizedUrl : null;
+  } catch {
+    return null;
+  }
+}
+
+function labelFromDocumentUrl(sourceUrl) {
+  try {
+    const lastSegment = new URL(sourceUrl).pathname.split("/").filter(Boolean).pop() || "";
+    const decoded = decodeURIComponent(lastSegment)
+      .replace(/\.[a-z0-9]{2,5}$/i, "")
+      .replace(/[-_]+/g, " ");
+    return cleanText(decoded) || "Dokument";
+  } catch {
+    return "Dokument";
+  }
+}
+
+function collectRawDocumentUrls(value) {
+  return (
+    String(value || "").match(
+      /https?:\/\/[^\s"'<>]+?\.(?:pdf|docx?|zip)(?:[?#][^\s"'<>]*)?/gi,
+    ) || []
+  );
+}
+
+function collectVloreKonsultimeDocuments($, pageUrl = DEFAULT_LISTING_URL) {
+  const documents = [];
+  const seen = new Set();
+  const root = $("article .entry-inner, article .entry, article .post-inner");
+
+  function addDocument(url, label) {
+    const normalizedUrl = normalizeVloreDocumentUrl(url, pageUrl);
+    if (!normalizedUrl || seen.has(normalizedUrl)) return;
+    seen.add(normalizedUrl);
+    documents.push({
+      url: normalizedUrl,
+      label: cleanText(label) || labelFromDocumentUrl(normalizedUrl),
+    });
+  }
+
+  root.find("a[href]").each((_, el) => {
+    const link = $(el);
+    addDocument(link.attr("href") || "", link.text());
+  });
+
+  root.each((_, el) => {
+    const node = $(el);
+    const scopedHtml = `${node.html() || ""} ${node.text() || ""}`;
+    for (const rawUrl of collectRawDocumentUrls(scopedHtml)) {
+      addDocument(rawUrl, "");
+    }
+  });
+
+  return documents;
 }
 
 function parseVloreRegisterDate(raw) {
@@ -341,6 +409,47 @@ async function scrapeVloreKonsultime({ url, year, limit = 50, pageStart = 1 }) {
   }
 
   const items = mergeVloreItems(categoryItems, registerItems, { year, limit });
+  let detailPagesFetched = 0;
+  let detailFetchFailures = 0;
+  let categoryDocumentLinks = 0;
+  let registerDocumentLinks = 0;
+
+  for (const item of items) {
+    const isRegisterItem = item.kind === "draft_act";
+    item.documents = [];
+
+    const directDocumentUrl = normalizeVloreDocumentUrl(item.source_url, item.source_page_url || siteUrl);
+    if (directDocumentUrl) {
+      item.documents = [
+        {
+          url: directDocumentUrl,
+          label: cleanText(item.title) || labelFromDocumentUrl(directDocumentUrl),
+        },
+      ];
+    } else {
+      try {
+        const detailFetched = await fetchHtml(item.source_url);
+        if (detailFetched.ok) {
+          detailPagesFetched += 1;
+          const $ = cheerio.load(detailFetched.html);
+          item.documents = collectVloreKonsultimeDocuments(
+            $,
+            detailFetched.url || item.source_url,
+          );
+        } else {
+          detailFetchFailures += 1;
+        }
+      } catch {
+        detailFetchFailures += 1;
+      }
+    }
+
+    if (isRegisterItem) {
+      registerDocumentLinks += item.documents.length;
+    } else {
+      categoryDocumentLinks += item.documents.length;
+    }
+  }
 
   return {
     url: siteUrl,
@@ -351,17 +460,24 @@ async function scrapeVloreKonsultime({ url, year, limit = 50, pageStart = 1 }) {
       visited_pages: visitedPageUrls.size,
       category_items: categoryItems.length,
       register_items: registerItems.length,
+      detail_pages_fetched: detailPagesFetched,
+      detail_fetch_failures: detailFetchFailures,
+      document_links: categoryDocumentLinks + registerDocumentLinks,
+      category_document_links: categoryDocumentLinks,
+      register_document_links: registerDocumentLinks,
     },
   };
 }
 
 module.exports = {
   classifyKind,
+  collectVloreKonsultimeDocuments,
   deriveVloreRegisterTitle,
   extractVloreRegisterUrl,
   getVloreKonsultimeNextPageUrl,
   isMeaningfulTitle,
   mergeVloreItems,
+  normalizeVloreDocumentUrl,
   parseVloreCategoryDate,
   parseVloreCategoryHtml,
   parseVloreRegisterDate,
