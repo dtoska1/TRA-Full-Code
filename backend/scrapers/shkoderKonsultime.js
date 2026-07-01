@@ -1,6 +1,7 @@
 "use strict";
 
 const cheerio = require("cheerio");
+const { isLikelyDocumentAttachmentUrl } = require("../lib/documentAttachments");
 const {
   classifyKind,
   cleanText,
@@ -69,6 +70,59 @@ async function fetchHtml(url) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+function isShkoderHost(host) {
+  return host === SOURCE_ORIGIN || host === `www.${SOURCE_ORIGIN}`;
+}
+
+function normalizeShkoderDocumentUrl(href, baseUrl = DEFAULT_LISTING_URL) {
+  const url = makeAbsolute(baseUrl, href);
+  if (!url) return null;
+
+  try {
+    const parsed = new URL(url);
+    if (!isShkoderHost(parsed.hostname.toLowerCase())) return null;
+    parsed.hostname = SOURCE_ORIGIN;
+    parsed.hash = "";
+    const normalizedUrl = parsed.toString();
+    return isLikelyDocumentAttachmentUrl(normalizedUrl) ? normalizedUrl : null;
+  } catch {
+    return null;
+  }
+}
+
+function labelFromDocumentUrl(sourceUrl) {
+  try {
+    const lastSegment = new URL(sourceUrl).pathname.split("/").filter(Boolean).pop() || "";
+    const decoded = decodeURIComponent(lastSegment)
+      .replace(/\.[a-z0-9]{2,5}$/i, "")
+      .replace(/[-_]+/g, " ");
+    return cleanText(decoded) || "Dokument";
+  } catch {
+    return "Dokument";
+  }
+}
+
+function collectShkoderKonsultimeDocuments($, pageUrl = DEFAULT_LISTING_URL) {
+  const documents = [];
+  const seen = new Set();
+  const scopes = $("article, .entry-content, main");
+  const root = scopes.length ? scopes : $("body");
+
+  root.find("a[href]").each((_, el) => {
+    const link = $(el);
+    const url = normalizeShkoderDocumentUrl(link.attr("href") || "", pageUrl);
+    if (!url || seen.has(url)) return;
+
+    seen.add(url);
+    documents.push({
+      url,
+      label: cleanText(link.text()) || labelFromDocumentUrl(url),
+    });
+  });
+
+  return documents;
 }
 
 function parseShkoderListingDate(raw) {
@@ -146,6 +200,8 @@ async function scrapeShkoderKonsultime({ url, year, limit = 50, pageStart = 1 })
   const items = [];
   const seenSourceUrls = new Set();
   const visitedPageUrls = new Set();
+  let detailPagesFetched = 0;
+  let detailFetchFailures = 0;
   let pageUrl = siteUrl;
 
   for (let page = 1; pageUrl && page <= MAX_PAGES && items.length < lim; page += 1) {
@@ -169,6 +225,24 @@ async function scrapeShkoderKonsultime({ url, year, limit = 50, pageStart = 1 })
       if (wantedYear && Number(String(item.published_date).slice(0, 4)) !== wantedYear) continue;
       if (seenSourceUrls.has(item.source_url)) continue;
       seenSourceUrls.add(item.source_url);
+
+      item.documents = [];
+      try {
+        const detailFetched = await fetchHtml(item.source_url);
+        if (detailFetched.ok) {
+          detailPagesFetched += 1;
+          const $ = cheerio.load(detailFetched.html);
+          item.documents = collectShkoderKonsultimeDocuments(
+            $,
+            detailFetched.url || item.source_url,
+          );
+        } else {
+          detailFetchFailures += 1;
+        }
+      } catch {
+        detailFetchFailures += 1;
+      }
+
       items.push(item);
       newOnPage += 1;
     }
@@ -195,14 +269,22 @@ async function scrapeShkoderKonsultime({ url, year, limit = 50, pageStart = 1 })
       source_origin: SOURCE_ORIGIN,
       custom_official_scraper: true,
       visited_pages: visitedPageUrls.size,
+      detail_pages_fetched: detailPagesFetched,
+      detail_fetch_failures: detailFetchFailures,
+      document_links: items.reduce(
+        (total, item) => total + (Array.isArray(item.documents) ? item.documents.length : 0),
+        0,
+      ),
     },
   };
 }
 
 module.exports = {
   classifyKind,
+  collectShkoderKonsultimeDocuments,
   foldText,
   getShkoderKonsultimeNextPageUrl,
+  normalizeShkoderDocumentUrl,
   parseShkoderKonsultimeHtml,
   parseShkoderListingDate,
   scrapeShkoderKonsultime,
