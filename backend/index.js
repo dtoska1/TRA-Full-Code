@@ -21,6 +21,14 @@ const net = require("net");
 const crypto = require("crypto");
 const { fetchVendimeStatusSummary } = require("./lib/vendimeStatus");
 const { fetchCoverageSummary } = require("./lib/coverageStatus");
+const {
+  detectScrapedAttachmentType,
+  getAllowlistedAttachmentExtension,
+  isLikelyDocumentAttachmentUrl,
+  isSameOfficialHost,
+  normalizeAttachmentHost,
+  parseHttpUrl,
+} = require("./lib/documentAttachments");
 
 // Make Node prefer IPv4 first (helps on some Windows setups)
 dns.setDefaultResultOrder("ipv4first");
@@ -230,6 +238,7 @@ const MANUAL_UPLOAD_MAX_BYTES = (() => {
   const raw = Number.parseInt(String(process.env.MANUAL_UPLOAD_MAX_BYTES || ""), 10);
   return Number.isFinite(raw) && raw > 0 ? raw : 20 * 1024 * 1024;
 })();
+const KONSULTIME_MAX_DOCS_PER_ITEM = 50;
 const UPLOADS_DIR = path.resolve(__dirname, "uploads");
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const KONSULTIME_FALLBACK_KEYWORDS = [
@@ -579,152 +588,6 @@ function isUuid(value) {
   return UUID_RE.test(String(value || "").trim());
 }
 
-function parseHttpUrl(value) {
-  const raw = String(value || "").trim();
-  if (!raw) return null;
-  try {
-    const parsed = new URL(raw);
-    if (!["http:", "https:"].includes(parsed.protocol)) return null;
-    return parsed.toString();
-  } catch {
-    return null;
-  }
-}
-
-function hasPdfMagicBytes(buffer) {
-  if (!Buffer.isBuffer(buffer) || buffer.length < 5) return false;
-  return buffer.slice(0, 5).toString("ascii") === "%PDF-";
-}
-
-function hasZipMagicBytes(buffer) {
-  if (!Buffer.isBuffer(buffer) || buffer.length < 4) return false;
-  const head = buffer.slice(0, 4).toString("binary");
-  return head === "PK\u0003\u0004" || head === "PK\u0005\u0006" || head === "PK\u0007\b";
-}
-
-function hasOleCompoundMagicBytes(buffer) {
-  if (!Buffer.isBuffer(buffer) || buffer.length < 8) return false;
-  return buffer.slice(0, 8).equals(Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]));
-}
-
-const SCRAPER_ATTACHMENT_TYPES = {
-  pdf: { extension: "pdf", mimeType: "application/pdf" },
-  doc: { extension: "doc", mimeType: "application/msword" },
-  docx: {
-    extension: "docx",
-    mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  },
-  zip: { extension: "zip", mimeType: "application/zip" },
-};
-const SCRAPER_ATTACHMENT_EXTENSIONS = new Set(Object.keys(SCRAPER_ATTACHMENT_TYPES));
-
-function getAllowlistedAttachmentExtension(fileName) {
-  const match = /\.([a-z0-9]+)$/i.exec(String(fileName || "").split(/[?#]/)[0] || "");
-  if (!match) return null;
-  const ext = match[1].toLowerCase();
-  return SCRAPER_ATTACHMENT_EXTENSIONS.has(ext) ? ext : null;
-}
-
-function safeDecodeUrlPath(value) {
-  const raw = String(value || "");
-  try {
-    return decodeURIComponent(raw);
-  } catch {
-    return raw;
-  }
-}
-
-function getAttachmentExtensionFromUrl(value) {
-  const raw = parseHttpUrl(value);
-  if (!raw) return null;
-
-  let parsed = null;
-  try {
-    parsed = new URL(raw);
-  } catch {
-    return null;
-  }
-
-  const pathExt = getAllowlistedAttachmentExtension(safeDecodeUrlPath(parsed.pathname || ""));
-  if (pathExt) return pathExt;
-
-  for (const value of parsed.searchParams.values()) {
-    const paramExt = getAllowlistedAttachmentExtension(safeDecodeUrlPath(value));
-    if (paramExt) return paramExt;
-  }
-
-  return null;
-}
-
-function getAttachmentExtensionFromContentType(contentType) {
-  const normalized = String(contentType || "").split(";")[0].trim().toLowerCase();
-  if (!normalized) return null;
-  if (normalized === "application/pdf") return "pdf";
-  if (normalized === "application/msword") return "doc";
-  if (normalized === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
-    return "docx";
-  }
-  if (normalized === "application/zip" || normalized === "application/x-zip-compressed") {
-    return "zip";
-  }
-  return null;
-}
-
-function detectScrapedAttachmentType({ sourceUrl, contentType, buffer }) {
-  const urlExt = getAttachmentExtensionFromUrl(sourceUrl);
-  const contentExt = getAttachmentExtensionFromContentType(contentType);
-  const candidates = [urlExt, contentExt].filter(Boolean);
-
-  if (candidates.includes("pdf") || hasPdfMagicBytes(buffer)) {
-    return hasPdfMagicBytes(buffer) ? SCRAPER_ATTACHMENT_TYPES.pdf : null;
-  }
-
-  if (candidates.includes("doc")) {
-    return hasOleCompoundMagicBytes(buffer) ? SCRAPER_ATTACHMENT_TYPES.doc : null;
-  }
-
-  if (candidates.includes("docx")) {
-    return hasZipMagicBytes(buffer) ? SCRAPER_ATTACHMENT_TYPES.docx : null;
-  }
-
-  if (candidates.includes("zip")) {
-    return hasZipMagicBytes(buffer) ? SCRAPER_ATTACHMENT_TYPES.zip : null;
-  }
-
-  if (hasZipMagicBytes(buffer)) return SCRAPER_ATTACHMENT_TYPES.zip;
-  return null;
-}
-
-function isLikelyDocumentAttachmentUrl(value) {
-  const raw = parseHttpUrl(value);
-  if (!raw) return false;
-
-  let parsed = null;
-  try {
-    parsed = new URL(raw);
-  } catch {
-    return false;
-  }
-
-  const lowerUrl = raw.toLowerCase();
-  const lowerPath = safeDecodeUrlPath(parsed.pathname || "").toLowerCase();
-  if (getAttachmentExtensionFromUrl(raw)) return true;
-  if (/\/(download|downloads|file|files|attachment|attachments)(\/|$)/i.test(lowerPath)) {
-    return true;
-  }
-
-  for (const [key, value] of parsed.searchParams.entries()) {
-    const normalizedKey = String(key || "").toLowerCase();
-    const normalizedValue = safeDecodeUrlPath(value).toLowerCase();
-    if (getAllowlistedAttachmentExtension(normalizedValue)) return true;
-    if (["download", "file", "attachment", "attachment_id", "document"].includes(normalizedKey)) {
-      return true;
-    }
-  }
-
-  return /\.(pdf|doc|docx|zip)(\?|#|$)/i.test(lowerUrl);
-}
-
 function parseContentLengthBytes(value) {
   const raw = String(value || "").trim();
   if (!/^\d+$/.test(raw)) return null;
@@ -789,7 +652,7 @@ function formatScrapeAttachmentError(err) {
   return safePublicErrorMessage(err, "attachment_archive_failed");
 }
 
-async function fetchScrapedDocumentBuffer(sourceUrl) {
+async function fetchScrapedDocumentBuffer(sourceUrl, { officialHost = null } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), SCRAPE_REQUEST_TIMEOUT_MS);
   try {
@@ -809,6 +672,13 @@ async function fetchScrapedDocumentBuffer(sourceUrl) {
       return {
         status: "skipped",
         reason: `http_${response.status}`,
+      };
+    }
+
+    if (officialHost && !isSameOfficialHost(response.url || sourceUrl, officialHost)) {
+      return {
+        status: "skipped",
+        reason: "host_not_allowed",
       };
     }
 
@@ -931,7 +801,7 @@ async function insertScrapedDocumentAttachment({
   }
 }
 
-async function archiveScrapedDocumentAttachment({ itemId, sourceUrl }) {
+async function archiveScrapedDocumentAttachment({ itemId, sourceUrl, officialHost = null }) {
   const normalizedItemId = String(itemId || "").trim();
   const normalizedSourceUrl = parseHttpUrl(sourceUrl);
   if (!isUuid(normalizedItemId) || !normalizedSourceUrl) {
@@ -940,8 +810,11 @@ async function archiveScrapedDocumentAttachment({ itemId, sourceUrl }) {
   if (!isLikelyDocumentAttachmentUrl(normalizedSourceUrl)) {
     return { status: "skipped", reason: "not_document_url" };
   }
+  if (officialHost && !isSameOfficialHost(normalizedSourceUrl, officialHost)) {
+    return { status: "skipped", reason: "host_not_allowed" };
+  }
 
-  const fetched = await fetchScrapedDocumentBuffer(normalizedSourceUrl);
+  const fetched = await fetchScrapedDocumentBuffer(normalizedSourceUrl, { officialHost });
   if (fetched.status !== "fetched") return fetched;
 
   const sha256 = crypto.createHash("sha256").update(fetched.buffer).digest("hex");
@@ -954,9 +827,9 @@ async function archiveScrapedDocumentAttachment({ itemId, sourceUrl }) {
   });
 }
 
-async function archiveScrapedDocumentAttachmentBestEffort({ itemId, sourceUrl, context }) {
+async function archiveScrapedDocumentAttachmentBestEffort({ itemId, sourceUrl, context, officialHost = null }) {
   try {
-    const result = await archiveScrapedDocumentAttachment({ itemId, sourceUrl });
+    const result = await archiveScrapedDocumentAttachment({ itemId, sourceUrl, officialHost });
     if (result.status === "failed") {
       console.warn(
         `[scrape.attachments] failed context=${truncateLogJson(context)} source_url=${truncateLogJson(
@@ -986,6 +859,80 @@ async function archiveScrapedDocumentAttachmentBestEffort({ itemId, sourceUrl, c
       reason: safePublicErrorMessage(err, "attachment_archive_failed"),
     };
   }
+}
+
+function incrementAttachmentArchiveSummary(summary, result) {
+  const status = String(result?.status || "").trim();
+  if (status === "stored") summary.stored += 1;
+  else if (status === "duplicate") summary.duplicate += 1;
+  else if (status === "failed") summary.failed += 1;
+  else summary.skipped += 1;
+}
+
+async function archiveItemDocuments({ itemId, documents, officialHost, context }) {
+  const summary = { stored: 0, duplicate: 0, skipped: 0, failed: 0 };
+  const normalizedItemId = String(itemId || "").trim();
+  const normalizedOfficialHost = normalizeAttachmentHost(officialHost);
+  if (!isUuid(normalizedItemId) || !normalizedOfficialHost) {
+    summary.skipped = Array.isArray(documents) ? documents.length : 0;
+    return summary;
+  }
+
+  const documentList = Array.isArray(documents) ? documents : [];
+  const documentsToProcess = documentList.slice(0, KONSULTIME_MAX_DOCS_PER_ITEM);
+  if (documentList.length > KONSULTIME_MAX_DOCS_PER_ITEM) {
+    const skippedByCeiling = documentList.length - KONSULTIME_MAX_DOCS_PER_ITEM;
+    summary.skipped += skippedByCeiling;
+    console.warn(
+      `[scrape.attachments] skip context=${truncateLogJson(
+        context
+      )} reason=max_docs_per_item limit=${KONSULTIME_MAX_DOCS_PER_ITEM} skipped=${skippedByCeiling}`
+    );
+  }
+
+  const seenUrls = new Set();
+
+  for (const document of documentsToProcess) {
+    const sourceUrl = parseHttpUrl(
+      typeof document === "string" ? document : document?.url || document?.source_url || document?.href
+    );
+    if (!sourceUrl) {
+      summary.skipped += 1;
+      console.warn(
+        `[scrape.attachments] skip context=${truncateLogJson(context)} reason=invalid_document_url`
+      );
+      continue;
+    }
+    if (seenUrls.has(sourceUrl)) {
+      summary.skipped += 1;
+      continue;
+    }
+    seenUrls.add(sourceUrl);
+
+    if (!isLikelyDocumentAttachmentUrl(sourceUrl)) {
+      summary.skipped += 1;
+      continue;
+    }
+    if (!isSameOfficialHost(sourceUrl, normalizedOfficialHost)) {
+      summary.skipped += 1;
+      console.warn(
+        `[scrape.attachments] skip context=${truncateLogJson(context)} source_url=${truncateLogJson(
+          sourceUrl
+        )} reason=host_not_allowed official_host=${truncateLogJson(normalizedOfficialHost)}`
+      );
+      continue;
+    }
+
+    const result = await archiveScrapedDocumentAttachmentBestEffort({
+      itemId: normalizedItemId,
+      sourceUrl,
+      officialHost: normalizedOfficialHost,
+      context,
+    });
+    incrementAttachmentArchiveSummary(summary, result);
+  }
+
+  return summary;
 }
 
 function manualDedupKeyV1({
@@ -3727,12 +3674,23 @@ app.get("/api/feed", async (req, res) => {
         v.created_at,
         v.collected_at,
         COALESCE(att.attachment_count, 0)::int AS attachment_count,
-        att.primary_attachment_id
+        att.primary_attachment_id,
+        COALESCE(att.attachments, '[]'::jsonb) AS attachments
       FROM v_public_feed v
       LEFT JOIN LATERAL (
         SELECT
           COUNT(*)::int AS attachment_count,
-          (ARRAY_AGG(a.id::text ORDER BY a.created_at ASC, a.id ASC))[1] AS primary_attachment_id
+          (ARRAY_AGG(a.id::text ORDER BY a.created_at ASC, a.id ASC))[1] AS primary_attachment_id,
+          jsonb_agg(
+            jsonb_build_object(
+              'id', a.id::text,
+              'file_name', a.file_name,
+              'mime_type', a.mime_type,
+              'size_bytes', COALESCE(a.size_bytes, 0),
+              'created_at', a.created_at
+            )
+            ORDER BY a.created_at ASC, a.id ASC
+          ) AS attachments
         FROM attachments a
         WHERE a.item_id = v.id
       ) att ON TRUE
@@ -3747,9 +3705,20 @@ app.get("/api/feed", async (req, res) => {
     const itemsResult = await pool.query(itemsSql, itemParams);
     const items = itemsResult.rows.map((row) => {
       const primaryAttachmentId = String(row.primary_attachment_id || "").trim() || null;
+      const attachments = Array.isArray(row.attachments)
+        ? row.attachments.map((attachment) => ({
+            id: attachment.id,
+            file_name: attachment.file_name || null,
+            mime_type: attachment.mime_type || null,
+            size_bytes: Number(attachment.size_bytes || 0),
+            created_at: attachment.created_at || null,
+            public_file_url: buildPublicFilePath(attachment.id),
+          }))
+        : [];
       return {
         ...row,
         attachment_count: Number(row.attachment_count || 0),
+        attachments,
         primary_attachment_id: primaryAttachmentId,
         primary_attachment_public_url: primaryAttachmentId
           ? buildPublicFilePath(primaryAttachmentId)
@@ -4888,6 +4857,7 @@ app.post("/api/scrape/run", async (req, res) => {
           let sample_kept_title = null;
           const keptTitlesSample = [];
           const keptDedupKeys = new Set();
+          const documentArchiveSummary = { stored: 0, duplicate: 0, skipped: 0, failed: 0 };
           let uniqueScrapedItems = mergedScrapedItems;
           if (category === "Konsultime publike" && fallbackSummary.attempted) {
             uniqueScrapedItems = [];
@@ -5010,6 +4980,36 @@ app.post("/api/scrape/run", async (req, res) => {
               systemUserId,
             });
 
+            const itemDocuments = Array.isArray(it.documents) ? it.documents : [];
+            if (itemDocuments.length > 0) {
+              const itemId = await findScraperItemId({
+                municipalityId,
+                category,
+                dedupKey,
+                sourceUrl,
+              });
+              if (!itemId) {
+                documentArchiveSummary.skipped += itemDocuments.length;
+                console.warn(
+                  `[scrape.attachments] skip context=${truncateLogJson(
+                    `category=${category} municipality_id=${municipalityId}`
+                  )} source_url=${truncateLogJson(sourceUrl)} reason=item_not_found documents=${itemDocuments.length}`
+                );
+              } else {
+                const officialHost = getHost(sourcePageUrl || sourceUrl || itemBaseUrl);
+                const archiveSummary = await archiveItemDocuments({
+                  itemId,
+                  documents: itemDocuments,
+                  officialHost,
+                  context: `category=${category} municipality_id=${municipalityId} item_id=${itemId}`,
+                });
+                documentArchiveSummary.stored += archiveSummary.stored;
+                documentArchiveSummary.duplicate += archiveSummary.duplicate;
+                documentArchiveSummary.skipped += archiveSummary.skipped;
+                documentArchiveSummary.failed += archiveSummary.failed;
+              }
+            }
+
             await archiveScrapedDocumentAttachmentForScraperItem({
               municipalityId,
               category,
@@ -5093,6 +5093,7 @@ app.post("/api/scrape/run", async (req, res) => {
               category === "Konsultime publike" && fallbackSummary.attempted
                 ? fallbackSummary
                 : undefined,
+            document_archival: documentArchiveSummary,
             sample_title: sample_kept_title || baselineResult.items[0]?.title || null,
             debug: debugEnabled
               ? {

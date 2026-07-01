@@ -1,5 +1,12 @@
 import Link from "next/link";
-import { FeedItem, SearchItem, formatDate, sourceHostFromUrl, toAbsoluteApiUrl } from "../lib/public-feed";
+import {
+  FeedAttachment,
+  FeedItem,
+  SearchItem,
+  formatDate,
+  sourceHostFromUrl,
+  toAbsoluteApiUrl,
+} from "../lib/public-feed";
 import { VerticalTheme, getVerticalThemeByCategory } from "../lib/verticals";
 
 export function StatCard({
@@ -95,6 +102,12 @@ export function SectionHeading({
   );
 }
 
+function attachmentLabel(attachment: FeedAttachment, index: number): string {
+  const fileName = String(attachment.file_name || "").trim();
+  if (fileName) return fileName;
+  return `Dokument ${index + 1}`;
+}
+
 export function FeedCard({
   item,
   theme,
@@ -106,6 +119,13 @@ export function FeedCard({
 }) {
   const resolvedTheme = theme || getVerticalThemeByCategory(item.category);
   const publicFileUrl = toAbsoluteApiUrl(item.primary_attachment_public_url);
+  const attachmentLinks = (item.attachments || [])
+    .map((attachment, index) => ({
+      ...attachment,
+      label: attachmentLabel(attachment, index),
+      href: toAbsoluteApiUrl(attachment.public_file_url),
+    }))
+    .filter((attachment) => attachment.href);
 
   return (
     <li
@@ -136,7 +156,7 @@ export function FeedCard({
                 Burimi
               </a>
             ) : null}
-            {publicFileUrl ? (
+            {publicFileUrl && attachmentLinks.length === 0 ? (
               <a
                 href={publicFileUrl}
                 target="_blank"
@@ -147,6 +167,26 @@ export function FeedCard({
               </a>
             ) : null}
           </div>
+          {attachmentLinks.length > 0 ? (
+            <div className="mt-4">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+                Dokumentet
+              </p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {attachmentLinks.map((attachment) => (
+                  <a
+                    key={attachment.id}
+                    href={attachment.href || undefined}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="rounded-full border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
+                  >
+                    {attachment.label}
+                  </a>
+                ))}
+              </div>
+            </div>
+          ) : null}
         </div>
       </div>
     </li>

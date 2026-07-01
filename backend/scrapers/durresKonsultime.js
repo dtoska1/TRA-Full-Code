@@ -1,6 +1,7 @@
 "use strict";
 
 const cheerio = require("cheerio");
+const { isLikelyDocumentAttachmentUrl } = require("../lib/documentAttachments");
 const {
   classifyKind,
   cleanText,
@@ -107,6 +108,54 @@ function normalizeFinalUrl(value, baseUrl = DEFAULT_LISTING_URL) {
   } catch {
     return null;
   }
+}
+
+function normalizeDurresDocumentUrl(href, baseUrl = DEFAULT_LISTING_URL) {
+  const url = makeAbsolute(baseUrl, href);
+  if (!url) return null;
+  try {
+    const parsed = new URL(url);
+    if (!isDurresHost(parsed.hostname.toLowerCase())) return null;
+    parsed.hostname = SOURCE_ORIGIN;
+    parsed.hash = "";
+    const normalizedUrl = parsed.toString();
+    return isLikelyDocumentAttachmentUrl(normalizedUrl) ? normalizedUrl : null;
+  } catch {
+    return null;
+  }
+}
+
+function labelFromDocumentUrl(sourceUrl) {
+  try {
+    const lastSegment = new URL(sourceUrl).pathname.split("/").filter(Boolean).pop() || "";
+    const decoded = decodeURIComponent(lastSegment)
+      .replace(/\.[a-z0-9]{2,5}$/i, "")
+      .replace(/[-_]+/g, " ");
+    return cleanText(decoded) || "Dokument";
+  } catch {
+    return "Dokument";
+  }
+}
+
+function collectDurresKonsultimeDocuments($, pageUrl = DEFAULT_LISTING_URL) {
+  const documents = [];
+  const seen = new Set();
+  const scopes = $("article, .entry-content, .elementor-widget-theme-post-content, main");
+  const root = scopes.length ? scopes : $("body");
+
+  root.find("a[href]").each((_, el) => {
+    const link = $(el);
+    const url = normalizeDurresDocumentUrl(link.attr("href") || "", pageUrl);
+    if (!url || seen.has(url)) return;
+
+    seen.add(url);
+    documents.push({
+      url,
+      label: cleanText(link.text()) || labelFromDocumentUrl(url),
+    });
+  });
+
+  return documents;
 }
 
 function parseDurresKonsultimeListingHtml(html, pageUrl = DEFAULT_LISTING_URL) {
@@ -229,6 +278,7 @@ function parseDurresKonsultimeDetailHtml(html, finalUrl, sourcePageUrl = DEFAULT
   if (!title) return null;
 
   const summary = firstUsefulParagraph($);
+  const documents = collectDurresKonsultimeDocuments($, sourceUrl);
   const visibleDateText = [
     $("time").first().text(),
     $(".elementor-post-info__item--type-date").first().text(),
@@ -249,6 +299,7 @@ function parseDurresKonsultimeDetailHtml(html, finalUrl, sourcePageUrl = DEFAULT
     source_origin: SOURCE_ORIGIN,
     kind: classifyKind(title, `${summary} ${$("body").text()}`),
     is_unofficial_proxy: false,
+    documents,
   };
 }
 
@@ -347,7 +398,9 @@ async function scrapeDurresKonsultime({ url, year, limit = 50, pageStart = 1 }) 
 module.exports = {
   classifyKind,
   getDurresKonsultimeNextPageUrl,
+  collectDurresKonsultimeDocuments,
   normalizeDurresDetailUrl,
+  normalizeDurresDocumentUrl,
   parseDurresKonsultimeDetailHtml,
   parseDurresKonsultimeListingHtml,
   parseIsoPublishedDate,

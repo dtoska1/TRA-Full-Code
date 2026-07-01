@@ -2,6 +2,15 @@ import { SupportedCategory } from "./verticals";
 
 export type QueryMap = Record<string, string | string[] | undefined>;
 
+export type FeedAttachment = {
+  id: string;
+  file_name: string | null;
+  mime_type?: string | null;
+  size_bytes?: number;
+  created_at?: string | null;
+  public_file_url: string | null;
+};
+
 export type FeedItem = {
   id: string;
   title: string;
@@ -12,6 +21,7 @@ export type FeedItem = {
   published_at: string | null;
   collected_at: string | null;
   attachment_count: number;
+  attachments?: FeedAttachment[];
   primary_attachment_id: string | null;
   primary_attachment_public_url: string | null;
 };
