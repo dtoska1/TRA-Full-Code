@@ -1,6 +1,7 @@
 "use strict";
 
 const cheerio = require("cheerio");
+const { isLikelyDocumentAttachmentUrl } = require("../lib/documentAttachments");
 const {
   classifyKind,
   cleanText,
@@ -53,6 +54,78 @@ async function fetchHtml(url) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+function isPogradecHost(host) {
+  return host === SOURCE_ORIGIN || host === `www.${SOURCE_ORIGIN}`;
+}
+
+function normalizePogradecDocumentUrl(href, baseUrl = DEFAULT_LISTING_URL) {
+  const url = makeAbsolute(baseUrl, href);
+  if (!url) return null;
+
+  try {
+    const parsed = new URL(url);
+    if (!isPogradecHost(parsed.hostname.toLowerCase())) return null;
+    parsed.hostname = SOURCE_ORIGIN;
+    parsed.hash = "";
+    const normalizedUrl = parsed.toString();
+    return isLikelyDocumentAttachmentUrl(normalizedUrl) ? normalizedUrl : null;
+  } catch {
+    return null;
+  }
+}
+
+function labelFromDocumentUrl(sourceUrl) {
+  try {
+    const lastSegment = new URL(sourceUrl).pathname.split("/").filter(Boolean).pop() || "";
+    const decoded = decodeURIComponent(lastSegment)
+      .replace(/\.[a-z0-9]{2,5}$/i, "")
+      .replace(/[-_]+/g, " ");
+    return cleanText(decoded) || "Dokument";
+  } catch {
+    return "Dokument";
+  }
+}
+
+function collectRawDocumentUrls(value) {
+  return (
+    String(value || "").match(
+      /https?:\/\/[^\s"'<>]+?\.(?:pdf|docx?|zip)(?:[?#][^\s"'<>]*)?/gi,
+    ) || []
+  );
+}
+
+function collectPogradecKonsultimeDocuments($, pageUrl = DEFAULT_LISTING_URL) {
+  const documents = [];
+  const seen = new Set();
+  const scopes = $("article, .entry-content, main, section.single-content, .single-content");
+  const root = scopes.length ? scopes : $("body");
+
+  function addDocument(url, label) {
+    const normalizedUrl = normalizePogradecDocumentUrl(url, pageUrl);
+    if (!normalizedUrl || seen.has(normalizedUrl)) return;
+    seen.add(normalizedUrl);
+    documents.push({
+      url: normalizedUrl,
+      label: cleanText(label) || labelFromDocumentUrl(normalizedUrl),
+    });
+  }
+
+  root.find("a[href]").each((_, el) => {
+    const link = $(el);
+    addDocument(link.attr("href") || "", link.text());
+  });
+
+  root.each((_, el) => {
+    const node = $(el);
+    const scopedHtml = `${node.html() || ""} ${node.text() || ""}`;
+    for (const rawUrl of collectRawDocumentUrls(scopedHtml)) {
+      addDocument(rawUrl, "");
+    }
+  });
+
+  return documents;
 }
 
 function parsePogradecListingDate(raw) {
@@ -150,6 +223,8 @@ async function scrapePogradecKonsultime({ url, year, limit = 50, pageStart = 1 }
   const items = [];
   const seenSourceUrls = new Set();
   const visitedPageUrls = new Set();
+  let detailPagesFetched = 0;
+  let detailFetchFailures = 0;
   let pageUrl = siteUrl;
 
   for (let page = 1; pageUrl && page <= MAX_PAGES && items.length < lim; page += 1) {
@@ -173,6 +248,24 @@ async function scrapePogradecKonsultime({ url, year, limit = 50, pageStart = 1 }
       if (wantedYear && Number(String(item.published_date).slice(0, 4)) !== wantedYear) continue;
       if (seenSourceUrls.has(item.source_url)) continue;
       seenSourceUrls.add(item.source_url);
+
+      item.documents = [];
+      try {
+        const detailFetched = await fetchHtml(item.source_url);
+        if (detailFetched.ok) {
+          detailPagesFetched += 1;
+          const $ = cheerio.load(detailFetched.html);
+          item.documents = collectPogradecKonsultimeDocuments(
+            $,
+            detailFetched.url || item.source_url,
+          );
+        } else {
+          detailFetchFailures += 1;
+        }
+      } catch {
+        detailFetchFailures += 1;
+      }
+
       items.push(item);
       newOnPage += 1;
     }
@@ -199,13 +292,21 @@ async function scrapePogradecKonsultime({ url, year, limit = 50, pageStart = 1 }
       source_origin: SOURCE_ORIGIN,
       custom_official_scraper: true,
       visited_pages: visitedPageUrls.size,
+      detail_pages_fetched: detailPagesFetched,
+      detail_fetch_failures: detailFetchFailures,
+      document_links: items.reduce(
+        (total, item) => total + (Array.isArray(item.documents) ? item.documents.length : 0),
+        0,
+      ),
     },
   };
 }
 
 module.exports = {
   classifyKind,
+  collectPogradecKonsultimeDocuments,
   getPogradecKonsultimeNextPageUrl,
+  normalizePogradecDocumentUrl,
   parsePogradecKonsultimeHtml,
   parsePogradecListingDate,
   scrapePogradecKonsultime,
