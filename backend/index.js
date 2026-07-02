@@ -22,6 +22,10 @@ const crypto = require("crypto");
 const { fetchVendimeStatusSummary } = require("./lib/vendimeStatus");
 const { fetchCoverageSummary } = require("./lib/coverageStatus");
 const {
+  computeConsultationScore,
+  neutralPendingReviewScore,
+} = require("./lib/consultationScoring");
+const {
   detectScrapedAttachmentType,
   getAllowlistedAttachmentExtension,
   isLikelyDocumentAttachmentUrl,
@@ -3034,6 +3038,253 @@ app.get("/api/status/vendime", async (req, res) => {
       ok: false,
       error: "db_error",
       message: safePublicErrorMessage(err, "Database operation failed"),
+    });
+  }
+});
+
+function consultationIndicatorValues(scores, key) {
+  const item = scores?.[key] || {};
+  return {
+    autoScore: Number(item.auto_score || 0),
+    confidence: String(item.confidence || "low").trim().toLowerCase() || "low",
+    argument: String(item.argument || "").trim(),
+  };
+}
+
+async function upsertConsultationScore({ municipalityId, scores }) {
+  const ind1 = consultationIndicatorValues(scores, "ind1");
+  const ind2 = consultationIndicatorValues(scores, "ind2");
+  const ind3 = consultationIndicatorValues(scores, "ind3");
+  const ind4 = consultationIndicatorValues(scores, "ind4");
+  const ind5 = consultationIndicatorValues(scores, "ind5");
+
+  await pool.query(
+    `
+    INSERT INTO consultation_scores (
+      municipality_id,
+      ind1_auto_score, ind1_final_score, ind1_confidence, ind1_argument,
+      ind2_auto_score, ind2_final_score, ind2_confidence, ind2_argument,
+      ind3_auto_score, ind3_final_score, ind3_confidence, ind3_argument,
+      ind4_auto_score, ind4_final_score, ind4_confidence, ind4_argument,
+      ind5_auto_score, ind5_final_score, ind5_confidence, ind5_argument,
+      computed_at,
+      status
+    )
+    VALUES (
+      $1,
+      $2, $2, $3, $4,
+      $5, $5, $6, $7,
+      $8, $8, $9, $10,
+      $11, $11, $12, $13,
+      $14, $14, $15, $16,
+      now(),
+      'published'
+    )
+    ON CONFLICT (municipality_id) DO UPDATE SET
+      ind1_auto_score = EXCLUDED.ind1_auto_score,
+      ind1_confidence = EXCLUDED.ind1_confidence,
+      ind1_final_score = CASE
+        WHEN consultation_scores.ind1_overridden THEN consultation_scores.ind1_final_score
+        ELSE EXCLUDED.ind1_final_score
+      END,
+      ind1_argument = CASE
+        WHEN consultation_scores.ind1_overridden THEN consultation_scores.ind1_argument
+        ELSE EXCLUDED.ind1_argument
+      END,
+      ind2_auto_score = EXCLUDED.ind2_auto_score,
+      ind2_confidence = EXCLUDED.ind2_confidence,
+      ind2_final_score = CASE
+        WHEN consultation_scores.ind2_overridden THEN consultation_scores.ind2_final_score
+        ELSE EXCLUDED.ind2_final_score
+      END,
+      ind2_argument = CASE
+        WHEN consultation_scores.ind2_overridden THEN consultation_scores.ind2_argument
+        ELSE EXCLUDED.ind2_argument
+      END,
+      ind3_auto_score = EXCLUDED.ind3_auto_score,
+      ind3_confidence = EXCLUDED.ind3_confidence,
+      ind3_final_score = CASE
+        WHEN consultation_scores.ind3_overridden THEN consultation_scores.ind3_final_score
+        ELSE EXCLUDED.ind3_final_score
+      END,
+      ind3_argument = CASE
+        WHEN consultation_scores.ind3_overridden THEN consultation_scores.ind3_argument
+        ELSE EXCLUDED.ind3_argument
+      END,
+      ind4_auto_score = EXCLUDED.ind4_auto_score,
+      ind4_confidence = EXCLUDED.ind4_confidence,
+      ind4_final_score = CASE
+        WHEN consultation_scores.ind4_overridden THEN consultation_scores.ind4_final_score
+        ELSE EXCLUDED.ind4_final_score
+      END,
+      ind4_argument = CASE
+        WHEN consultation_scores.ind4_overridden THEN consultation_scores.ind4_argument
+        ELSE EXCLUDED.ind4_argument
+      END,
+      ind5_auto_score = EXCLUDED.ind5_auto_score,
+      ind5_confidence = EXCLUDED.ind5_confidence,
+      ind5_final_score = CASE
+        WHEN consultation_scores.ind5_overridden THEN consultation_scores.ind5_final_score
+        ELSE EXCLUDED.ind5_final_score
+      END,
+      ind5_argument = CASE
+        WHEN consultation_scores.ind5_overridden THEN consultation_scores.ind5_argument
+        ELSE EXCLUDED.ind5_argument
+      END,
+      computed_at = EXCLUDED.computed_at,
+      status = 'published'
+    `,
+    [
+      municipalityId,
+      ind1.autoScore,
+      ind1.confidence,
+      ind1.argument,
+      ind2.autoScore,
+      ind2.confidence,
+      ind2.argument,
+      ind3.autoScore,
+      ind3.confidence,
+      ind3.argument,
+      ind4.autoScore,
+      ind4.confidence,
+      ind4.argument,
+      ind5.autoScore,
+      ind5.confidence,
+      ind5.argument,
+    ]
+  );
+}
+
+async function loadConsultationScoreTargets({ municipality, municipality_id }) {
+  if (
+    (municipality !== undefined && municipality !== null && String(municipality).trim() !== "") ||
+    (municipality_id !== undefined &&
+      municipality_id !== null &&
+      String(municipality_id).trim() !== "")
+  ) {
+    const municipalityId = await getMunicipalityId({ municipality, municipality_id });
+    if (!municipalityId) return null;
+    const row = await pool.query(
+      `
+      SELECT id AS municipality_id, lower(name_key) AS municipality
+      FROM municipalities
+      WHERE id = $1
+      LIMIT 1
+      `,
+      [municipalityId]
+    );
+    return row.rowCount ? row.rows : null;
+  }
+
+  const rows = await pool.query(
+    `
+    SELECT id AS municipality_id, lower(name_key) AS municipality
+    FROM municipalities
+    ORDER BY lower(name_key) ASC
+    `
+  );
+  return rows.rows;
+}
+
+async function loadConsultationScoreSummaries(municipalityIds) {
+  if (!municipalityIds.length) return new Map();
+  const result = await pool.query(
+    `
+    SELECT municipality_id, municipality_key, total, tier
+    FROM consultation_scores_effective
+    WHERE municipality_id = ANY($1::uuid[])
+    `,
+    [municipalityIds]
+  );
+  return new Map(
+    result.rows.map((row) => [
+      String(row.municipality_id),
+      {
+        municipality: row.municipality_key,
+        municipality_id: row.municipality_id,
+        total: Number(row.total || 0),
+        tier: row.tier || null,
+      },
+    ])
+  );
+}
+
+app.post("/api/consultation-scores/compute", adminLimiter, requireAdmin, async (req, res) => {
+  try {
+    const municipality =
+      req.query.municipality !== undefined ? String(req.query.municipality) : req.body?.municipality;
+    const municipality_id =
+      req.query.municipality_id !== undefined
+        ? String(req.query.municipality_id)
+        : req.body?.municipality_id;
+    const targets = await loadConsultationScoreTargets({ municipality, municipality_id });
+    if (!targets) {
+      return badRequest(res, "Invalid municipality (name_key/name_sq) or municipality_id");
+    }
+
+    let computed = 0;
+    let failed = 0;
+    const targetIds = [];
+
+    for (const target of targets) {
+      const municipalityId = String(target.municipality_id || "").trim();
+      if (!municipalityId) continue;
+      targetIds.push(municipalityId);
+
+      try {
+        const scores = await computeConsultationScore(pool, municipalityId);
+        await upsertConsultationScore({ municipalityId, scores });
+        computed++;
+      } catch (err) {
+        failed++;
+        console.warn(
+          `[consultation-scores.compute] failed municipality_id=${truncateLogJson(
+            municipalityId
+          )} message=${truncateLogJson(safePublicErrorMessage(err, "auto_compute_failed"))}`
+        );
+        await upsertConsultationScore({
+          municipalityId,
+          scores: neutralPendingReviewScore(),
+        });
+      }
+    }
+
+    const summaries = await loadConsultationScoreSummaries(targetIds);
+    const items = targets
+      .map((target) => {
+        const municipalityId = String(target.municipality_id || "").trim();
+        return (
+          summaries.get(municipalityId) || {
+            municipality: target.municipality,
+            municipality_id: municipalityId,
+            total: 0,
+            tier: null,
+          }
+        );
+      })
+      .map((item) => ({
+        municipality: item.municipality,
+        municipality_id: item.municipality_id,
+        total: item.total,
+        tier: item.tier,
+      }));
+
+    return res.json({
+      ok: true,
+      computed,
+      failed,
+      items,
+    });
+  } catch (err) {
+    console.warn(
+      `[consultation-scores.compute] route_failed message=${truncateLogJson(
+        safePublicErrorMessage(err, "route_failed")
+      )}`
+    );
+    return res.status(500).json({
+      ok: false,
+      error: "db_error",
+      message: "Consultation score compute failed.",
     });
   }
 });
