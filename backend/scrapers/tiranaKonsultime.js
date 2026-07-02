@@ -1,6 +1,7 @@
 "use strict";
 
 const cheerio = require("cheerio");
+const { isLikelyDocumentAttachmentUrl } = require("../lib/documentAttachments");
 const {
   classifyKind,
   cleanText,
@@ -79,6 +80,22 @@ function normalizeTiranaUrl(href, baseUrl = DEFAULT_LISTING_URL) {
   }
 }
 
+function normalizeTiranaDocumentUrl(href, baseUrl = DEFAULT_LISTING_URL) {
+  const url = makeAbsolute(baseUrl, href);
+  if (!url) return null;
+
+  try {
+    const parsed = new URL(url);
+    if (!isTiranaHost(parsed.hostname.toLowerCase())) return null;
+    parsed.hostname = SOURCE_ORIGIN;
+    parsed.hash = "";
+    const normalizedUrl = parsed.toString();
+    return isLikelyDocumentAttachmentUrl(normalizedUrl) ? normalizedUrl : null;
+  } catch {
+    return null;
+  }
+}
+
 function normalizeTiranaArticleUrl(href, baseUrl = DEFAULT_LISTING_URL) {
   const url = normalizeTiranaUrl(href, baseUrl);
   if (!url) return null;
@@ -101,6 +118,57 @@ function isLikelyChallengeHtml(html) {
     folded.includes("captcha") ||
     folded.includes("access denied")
   );
+}
+
+function labelFromDocumentUrl(sourceUrl) {
+  try {
+    const lastSegment = new URL(sourceUrl).pathname.split("/").filter(Boolean).pop() || "";
+    const decoded = decodeURIComponent(lastSegment)
+      .replace(/\.[a-z0-9]{2,5}$/i, "")
+      .replace(/[-_]+/g, " ");
+    return cleanText(decoded) || "Dokument";
+  } catch {
+    return "Dokument";
+  }
+}
+
+function collectRawDocumentUrls(value) {
+  return (
+    String(value || "").match(
+      /https?:\/\/[^\s"'<>]+?\.(?:pdf|docx?|zip)(?:[?#][^\s"'<>]*)?/gi,
+    ) || []
+  );
+}
+
+function collectTiranaKonsultimeDocuments($, pageUrl = DEFAULT_LISTING_URL) {
+  const documents = [];
+  const seen = new Set();
+  const root = $("section#right.single-content, section.single-content, .single-content");
+
+  function addDocument(url, label) {
+    const normalizedUrl = normalizeTiranaDocumentUrl(url, pageUrl);
+    if (!normalizedUrl || seen.has(normalizedUrl)) return;
+    seen.add(normalizedUrl);
+    documents.push({
+      url: normalizedUrl,
+      label: cleanText(label) || labelFromDocumentUrl(normalizedUrl),
+    });
+  }
+
+  root.find("a[href]").each((_, el) => {
+    const link = $(el);
+    addDocument(link.attr("href") || "", link.text());
+  });
+
+  root.each((_, el) => {
+    const node = $(el);
+    const scopedHtml = `${node.html() || ""} ${node.text() || ""}`;
+    for (const rawUrl of collectRawDocumentUrls(scopedHtml)) {
+      addDocument(rawUrl, "");
+    }
+  });
+
+  return documents;
 }
 
 function parseTiranaNumericDate(raw) {
@@ -376,6 +444,13 @@ function mergeTiranaKonsultimeItems(
   return { items, duplicateCount };
 }
 
+function getTiranaKonsultimeItemSourceKind(item) {
+  const sourcePageUrl = normalizeTiranaUrl(item?.source_page_url || "", DEFAULT_LISTING_URL);
+  if (item?.kind === "draft_act" || sourcePageUrl === REGISTER_URL) return "register";
+  if (sourcePageUrl === HEARING_INFO_URL) return "hearing_info";
+  return "article";
+}
+
 async function scrapeTiranaKonsultime({ url, year, limit = 50, pageStart = 1 }) {
   const siteUrl = url || DEFAULT_LISTING_URL;
   const startPage = Math.max(1, Number(pageStart) || 1);
@@ -458,6 +533,50 @@ async function scrapeTiranaKonsultime({ url, year, limit = 50, pageStart = 1 }) 
     limit,
   });
 
+  let documentDetailPagesFetched = 0;
+  let documentDetailFetchFailures = 0;
+  const documentCountsBySource = {
+    article: 0,
+    register: 0,
+    hearing_info: 0,
+  };
+
+  for (const item of merged.items) {
+    const sourceKind = getTiranaKonsultimeItemSourceKind(item);
+    item.documents = [];
+
+    const directDocumentUrl = normalizeTiranaDocumentUrl(
+      item.source_url,
+      item.source_page_url || siteUrl,
+    );
+    if (directDocumentUrl) {
+      item.documents = [
+        {
+          url: directDocumentUrl,
+          label: cleanText(item.title) || labelFromDocumentUrl(directDocumentUrl),
+        },
+      ];
+    } else {
+      try {
+        const detailFetched = await fetchHtml(item.source_url);
+        if (detailFetched.ok && !isLikelyChallengeHtml(detailFetched.html)) {
+          documentDetailPagesFetched += 1;
+          const $ = cheerio.load(detailFetched.html);
+          item.documents = collectTiranaKonsultimeDocuments(
+            $,
+            detailFetched.url || item.source_url,
+          );
+        } else {
+          documentDetailFetchFailures += 1;
+        }
+      } catch {
+        documentDetailFetchFailures += 1;
+      }
+    }
+
+    documentCountsBySource[sourceKind] += item.documents.length;
+  }
+
   return {
     url: siteUrl,
     items: merged.items,
@@ -471,15 +590,26 @@ async function scrapeTiranaKonsultime({ url, year, limit = 50, pageStart = 1 }) 
       skipped_missing_date: skippedMissingDate,
       skipped_detail_fetch: skippedDetailFetch,
       duplicate_source_urls: merged.duplicateCount,
+      document_links:
+        documentCountsBySource.article +
+        documentCountsBySource.register +
+        documentCountsBySource.hearing_info,
+      article_document_links: documentCountsBySource.article,
+      register_document_links: documentCountsBySource.register,
+      hearing_info_document_links: documentCountsBySource.hearing_info,
+      document_detail_pages_fetched: documentDetailPagesFetched,
+      document_detail_fetch_failures: documentDetailFetchFailures,
     },
   };
 }
 
 module.exports = {
   classifyKind,
+  collectTiranaKonsultimeDocuments,
   getTiranaKonsultimeNextPageUrl,
   mergeTiranaKonsultimeItems,
   normalizeTiranaArticleUrl,
+  normalizeTiranaDocumentUrl,
   parseTiranaArticleDetailHtml,
   parseTiranaArticleLinks,
   parseTiranaHearingInfoHtml,
