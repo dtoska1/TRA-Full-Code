@@ -51,3 +51,4 @@ audit_municipality_keys_output.txt
 
 # Claude Code
 .claude/
+.full-secrets

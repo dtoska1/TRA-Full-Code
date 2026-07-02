@@ -5,7 +5,7 @@ services:
     environment:
       POSTGRES_DB: tra
       POSTGRES_USER: tra
-      POSTGRES_PASSWORD: tra_password_change_me
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tra_password_change_me}
     ports:
       - "127.0.0.1:5433:5432"
     volumes:
@@ -23,7 +23,7 @@ services:
     image: getmeili/meilisearch:v1.7
     container_name: tra_meili
     environment:
-      MEILI_MASTER_KEY: change_me_master_key
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-change_me_master_key}
     ports:
       - "127.0.0.1:7700:7700"
     volumes:
