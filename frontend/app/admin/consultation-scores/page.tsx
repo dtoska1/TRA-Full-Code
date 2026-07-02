@@ -1,10 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:5050";
-const STORAGE_KEY = "tra_admin_token";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { adminFetch } from "../../lib/admin-auth";
 
 type AdminIndicator = {
   n: number;
@@ -41,40 +39,6 @@ type AdminScoresResponse = {
 type IndicatorPatch =
   | { overridden: false }
   | { overridden: true; final_score: number; argument: string };
-
-type AdminRequestInit = {
-  method?: string;
-  headers?: Record<string, string>;
-  body?: string;
-};
-
-function buildApiUrl(pathname: string): string {
-  return new URL(pathname, `${API_BASE.replace(/\/+$/, "")}/`).toString();
-}
-
-function clearStoredToken() {
-  try {
-    window.sessionStorage.removeItem(STORAGE_KEY);
-  } catch {
-    // Ignore storage access failures.
-  }
-}
-
-function storeToken(token: string) {
-  try {
-    window.sessionStorage.setItem(STORAGE_KEY, token);
-  } catch {
-    // Ignore storage access failures.
-  }
-}
-
-function readStoredToken(): string {
-  try {
-    return String(window.sessionStorage.getItem(STORAGE_KEY) || "").trim();
-  } catch {
-    return "";
-  }
-}
 
 function formatDate(value: string | null | undefined): string {
   if (!value) return "Pa datë";
@@ -345,10 +309,6 @@ function MunicipalityReviewCard({
 }
 
 export default function AdminConsultationScoresPage() {
-  const tokenInputRef = useRef<HTMLInputElement>(null);
-  const [mounted, setMounted] = useState(false);
-  const [authReady, setAuthReady] = useState(false);
-  const [token, setToken] = useState<string | null>(null);
   const [items, setItems] = useState<AdminMunicipalityScore[]>([]);
   const [loading, setLoading] = useState(false);
   const [savingKey, setSavingKey] = useState<string | null>(null);
@@ -366,115 +326,53 @@ export default function AdminConsultationScoresPage() {
     );
   }, [filter, items]);
 
-  const adminFetch = useCallback(async function adminFetch(
-    pathname: string,
-    adminToken: string,
-    init: AdminRequestInit = {},
-  ): Promise<Response> {
-    const headers = new Headers(init.headers);
-    headers.set("Authorization", `Bearer ${adminToken}`);
-    headers.set("Accept", "application/json");
-    const response = await fetch(buildApiUrl(pathname), {
-      ...init,
-      headers,
-      cache: "no-store",
-    });
-
-    if (response.status === 401) {
-      clearStoredToken();
-      setToken(null);
-      setItems([]);
-      setError("Unauthorized. Please enter a valid admin token.");
-      throw new Error("unauthorized");
-    }
-
-    return response;
-  }, []);
-
-  const loadScores = useCallback(async function loadScores(
-    adminToken: string,
-    options: { initial?: boolean } = {},
-  ) {
+  const loadScores = useCallback(async function loadScores(options: { initial?: boolean } = {}) {
     setLoading(true);
     setError(null);
     setNotice(null);
     try {
-      const response = await adminFetch("/api/admin/consultation-scores", adminToken);
+      const response = await adminFetch("/api/admin/consultation-scores");
+      if (response.status === 401) {
+        setError("Sesioni ka skaduar. Ringarko faqen.");
+        return false;
+      }
       const payload = (await response.json().catch(() => null)) as AdminScoresResponse | null;
       if (!response.ok || !payload?.ok || !Array.isArray(payload.municipalities)) {
         throw new Error(payload?.message || payload?.error || `Request failed with HTTP ${response.status}`);
       }
       setItems(payload.municipalities);
-      setToken(adminToken);
       if (!options.initial) setNotice("Review data refreshed.");
       return true;
     } catch (err) {
-      if (err instanceof Error && err.message === "unauthorized") return false;
       setError(err instanceof Error ? err.message : "Failed to load consultation score review data.");
       return false;
     } finally {
       setLoading(false);
-      setAuthReady(true);
     }
-  }, [adminFetch]);
+  }, []);
 
   useEffect(() => {
-    setMounted(true);
-    const storedToken = readStoredToken();
-    if (!storedToken) {
-      setAuthReady(true);
-      return;
-    }
-    void loadScores(storedToken, { initial: true });
+    void loadScores({ initial: true });
   }, [loadScores]);
-
-  async function handleTokenSubmit(event: FormEvent) {
-    event.preventDefault();
-    const submittedToken = String(tokenInputRef.current?.value || "").trim();
-    if (!submittedToken) {
-      setError("Admin token is required.");
-      return;
-    }
-
-    const ok = await loadScores(submittedToken, { initial: true });
-    if (ok) {
-      storeToken(submittedToken);
-      if (tokenInputRef.current) tokenInputRef.current.value = "";
-    } else {
-      clearStoredToken();
-      if (tokenInputRef.current) tokenInputRef.current.value = "";
-    }
-  }
-
-  function handleLogout() {
-    clearStoredToken();
-    setToken(null);
-    setItems([]);
-    setError(null);
-    setNotice(null);
-  }
 
   async function handleSaveIndicator(
     municipalityKey: string,
     indicatorNumber: number,
     patch: IndicatorPatch,
   ) {
-    if (!token) return;
     setSavingKey(`${municipalityKey}:${indicatorNumber}`);
     setError(null);
     setNotice(null);
     try {
-      const response = await adminFetch(`/api/admin/consultation-scores/${municipalityKey}`, token, {
+      const response = await adminFetch(`/api/admin/consultation-scores/${municipalityKey}`, {
         method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          indicators: {
-            [String(indicatorNumber)]: patch,
-          },
-        }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ indicators: { [String(indicatorNumber)]: patch } }),
       });
+      if (response.status === 401) {
+        setError("Sesioni ka skaduar. Ringarko faqen.");
+        return;
+      }
       const payload = (await response.json().catch(() => null)) as AdminScoresResponse | null;
       if (!response.ok || !payload?.ok || !payload.municipality) {
         throw new Error(payload?.message || payload?.error || `Request failed with HTTP ${response.status}`);
@@ -489,70 +387,10 @@ export default function AdminConsultationScoresPage() {
       );
       setNotice(`${payload.municipality.municipality_name} indicator ${indicatorNumber} saved.`);
     } catch (err) {
-      if (err instanceof Error && err.message === "unauthorized") return;
       setError(err instanceof Error ? err.message : "Failed to save reviewer override.");
     } finally {
       setSavingKey(null);
     }
-  }
-
-  if (!mounted || !authReady) {
-    return (
-      <main className="mx-auto w-full max-w-6xl px-4 py-8 pb-12 sm:px-6">
-        <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-soft sm:p-8">
-          <div className="animate-pulse">
-            <div className="h-4 w-32 rounded bg-slate-200" />
-            <div className="mt-4 h-10 w-72 rounded bg-slate-200" />
-            <div className="mt-6 h-40 w-full rounded bg-slate-200" />
-          </div>
-        </section>
-      </main>
-    );
-  }
-
-  if (!token) {
-    return (
-      <main className="mx-auto w-full max-w-4xl px-4 py-8 pb-12 sm:px-6">
-        <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-soft sm:p-8">
-          <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">Admin</p>
-          <h1 className="mt-4 text-3xl font-semibold tracking-tight text-slate-950">
-            Consultation score review
-          </h1>
-          <p className="mt-3 max-w-2xl text-sm leading-7 text-slate-600">
-            Enter the admin token to review automated consultation matrix scores and save
-            reviewer overrides.
-          </p>
-
-          <form onSubmit={handleTokenSubmit} className="mt-8 space-y-4">
-            <label className="block text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
-              Admin token
-              <input
-                ref={tokenInputRef}
-                type="password"
-                className="mt-2 w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-slate-500"
-                placeholder="Enter ADMIN_TOKEN"
-                autoComplete="off"
-                required
-              />
-            </label>
-
-            <button
-              type="submit"
-              disabled={loading}
-              className="rounded-2xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {loading ? "Checking token..." : "Open review"}
-            </button>
-          </form>
-
-          {error ? (
-            <p className="mt-5 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-              {error}
-            </p>
-          ) : null}
-        </section>
-      </main>
-    );
   }
 
   return (
@@ -574,18 +412,11 @@ export default function AdminConsultationScoresPage() {
           <div className="flex flex-wrap gap-3">
             <button
               type="button"
-              onClick={() => void loadScores(token)}
+              onClick={() => void loadScores()}
               disabled={loading}
               className="rounded-2xl border border-slate-300 px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {loading ? "Refreshing..." : "Refresh"}
-            </button>
-            <button
-              type="button"
-              onClick={handleLogout}
-              className="rounded-2xl bg-slate-950 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-800"
-            >
-              Log out
             </button>
           </div>
         </div>

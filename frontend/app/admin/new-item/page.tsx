@@ -1,8 +1,8 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { type FormEvent, useState } from "react";
+import { adminFetch } from "../../lib/admin-auth";
 
-const DEFAULT_API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:5050";
 const CATEGORIES = ["Vendime", "Prokurime", "Konsultime publike"] as const;
 
 type Mode = "source_url" | "file";
@@ -23,8 +23,6 @@ function toCleanString(value: string): string {
 }
 
 export default function AdminNewItemPage() {
-  const [apiBase, setApiBase] = useState(DEFAULT_API_BASE);
-  const [token, setToken] = useState("");
   const [mode, setMode] = useState<Mode>("file");
   const [municipality, setMunicipality] = useState("tirane");
   const [municipalityId, setMunicipalityId] = useState("");
@@ -37,26 +35,9 @@ export default function AdminNewItemPage() {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ManualCreateResponse | null>(null);
 
-  const attachmentPaths = useMemo(() => {
-    const attachmentId = toCleanString(result?.attachment_id || "");
-    if (!attachmentId) {
-      return {
-        adminPath: null as string | null,
-        publicPath: null as string | null,
-        adminUrl: null as string | null,
-        publicUrl: null as string | null,
-      };
-    }
-    const adminPath = `/api/admin/files/${encodeURIComponent(attachmentId)}`;
-    const publicPath = `/api/public/files/${encodeURIComponent(attachmentId)}`;
-    const base = apiBase.replace(/\/+$/, "");
-    return {
-      adminPath,
-      publicPath,
-      adminUrl: `${base}${adminPath}`,
-      publicUrl: `${base}${publicPath}`,
-    };
-  }, [apiBase, result?.attachment_id]);
+  const attachmentId = toCleanString(result?.attachment_id || "");
+  const adminFilePath = attachmentId ? `/api/admin/files/${encodeURIComponent(attachmentId)}` : null;
+  const publicFilePath = attachmentId ? `/api/public/files/${encodeURIComponent(attachmentId)}` : null;
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -65,11 +46,6 @@ export default function AdminNewItemPage() {
     setResult(null);
 
     try {
-      const cleanToken = toCleanString(token);
-      if (!cleanToken) {
-        throw new Error("Admin token is required.");
-      }
-
       const cleanTitle = toCleanString(title);
       if (!cleanTitle) {
         throw new Error("Title is required.");
@@ -98,7 +74,6 @@ export default function AdminNewItemPage() {
         }
       }
 
-      const endpoint = `${apiBase.replace(/\/+$/, "")}/api/admin/items/manual`;
       let response: Response;
 
       if (mode === "source_url") {
@@ -111,13 +86,9 @@ export default function AdminNewItemPage() {
         if (cleanMunicipalityId) payload.municipality_id = cleanMunicipalityId;
         if (toCleanString(publishedDate)) payload.published_date = toCleanString(publishedDate);
 
-        response = await fetch(endpoint, {
+        response = await adminFetch("/api/admin/items/manual", {
           method: "POST",
-          headers: {
-            Authorization: `Bearer ${cleanToken}`,
-            "Content-Type": "application/json",
-            Accept: "application/json",
-          },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
       } else {
@@ -129,12 +100,8 @@ export default function AdminNewItemPage() {
         if (toCleanString(publishedDate)) formData.set("published_date", toCleanString(publishedDate));
         if (file) formData.set("file", file);
 
-        response = await fetch(endpoint, {
+        response = await adminFetch("/api/admin/items/manual", {
           method: "POST",
-          headers: {
-            Authorization: `Bearer ${cleanToken}`,
-            Accept: "application/json",
-          },
           body: formData,
         });
       }
@@ -164,31 +131,10 @@ export default function AdminNewItemPage() {
         <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Admin</p>
         <h1 className="mt-2 text-2xl font-semibold text-slate-900">Create Manual Item</h1>
         <p className="mt-2 text-sm text-slate-600">
-          Token is kept in memory only. Public file links return 404 until item status becomes published.
+          Public file links return 404 until item status becomes published.
         </p>
 
         <form onSubmit={handleSubmit} className="mt-4 space-y-4">
-          <div className="grid gap-3 sm:grid-cols-2">
-            <input
-              type="url"
-              value={apiBase}
-              onChange={(e) => setApiBase(e.target.value)}
-              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-              placeholder="API base URL"
-              aria-label="API base URL"
-              required
-            />
-            <input
-              type="password"
-              value={token}
-              onChange={(e) => setToken(e.target.value)}
-              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-              placeholder="Admin token"
-              aria-label="Admin token"
-              required
-            />
-          </div>
-
           <div className="grid gap-3 sm:grid-cols-2">
             <input
               type="text"
@@ -299,29 +245,29 @@ export default function AdminNewItemPage() {
             <p>Created item_id: {result.item_id}</p>
             <p>Status: {result.status}</p>
             {result.attachment_id ? <p>attachment_id: {result.attachment_id}</p> : null}
-            {attachmentPaths.adminUrl ? (
+            {adminFilePath ? (
               <p className="mt-2">
                 Admin file URL:{" "}
                 <a
-                  href={attachmentPaths.adminUrl}
+                  href={adminFilePath}
                   target="_blank"
                   rel="noreferrer"
                   className="text-blue-700 underline"
                 >
-                  {attachmentPaths.adminPath}
+                  {adminFilePath}
                 </a>
               </p>
             ) : null}
-            {attachmentPaths.publicUrl ? (
+            {publicFilePath ? (
               <p>
                 Public file URL:{" "}
                 <a
-                  href={attachmentPaths.publicUrl}
+                  href={publicFilePath}
                   target="_blank"
                   rel="noreferrer"
                   className="text-blue-700 underline"
                 >
-                  {attachmentPaths.publicPath}
+                  {publicFilePath}
                 </a>
               </p>
             ) : null}

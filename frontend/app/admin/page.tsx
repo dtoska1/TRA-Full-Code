@@ -1,10 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:5050";
-const STORAGE_KEY = "tra_admin_token";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { adminFetch } from "../lib/admin-auth";
 
 const OVERVIEW_CATEGORIES = [
   { key: "Vendime", description: "Published municipal decisions." },
@@ -36,14 +34,6 @@ type HealthState =
   | { status: "unavailable"; message: string }
   | { status: "error"; message: string };
 
-type AuthCheckResult =
-  | { ok: true }
-  | { ok: false; reason: "unauthorized" | "error"; message: string };
-
-function buildApiUrl(pathname: string): string {
-  return new URL(pathname, `${API_BASE.replace(/\/+$/, "")}/`).toString();
-}
-
 function formatValue(value: unknown): string {
   if (value === null || value === undefined || value === "") return "-";
   if (typeof value === "string") return value;
@@ -52,30 +42,6 @@ function formatValue(value: unknown): string {
     return JSON.stringify(value);
   } catch {
     return String(value);
-  }
-}
-
-function clearStoredToken() {
-  try {
-    window.sessionStorage.removeItem(STORAGE_KEY);
-  } catch {
-    // Ignore storage access failures.
-  }
-}
-
-function storeToken(token: string) {
-  try {
-    window.sessionStorage.setItem(STORAGE_KEY, token);
-  } catch {
-    // Ignore storage access failures.
-  }
-}
-
-function readStoredToken(): string {
-  try {
-    return String(window.sessionStorage.getItem(STORAGE_KEY) || "").trim();
-  } catch {
-    return "";
   }
 }
 
@@ -120,13 +86,7 @@ function pickHealthColumns(rows: HealthRow[]): string[] {
 }
 
 export default function AdminPage() {
-  const tokenInputRef = useRef<HTMLInputElement>(null);
-  const [mounted, setMounted] = useState(false);
-  const [authReady, setAuthReady] = useState(false);
-  const [token, setToken] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<AdminTab>("overview");
-  const [authError, setAuthError] = useState<string | null>(null);
-  const [authLoading, setAuthLoading] = useState(false);
   const [overviewLoading, setOverviewLoading] = useState(false);
   const [overviewError, setOverviewError] = useState<string | null>(null);
   const [overviewCards, setOverviewCards] = useState<FeedOverviewCard[]>([]);
@@ -137,57 +97,6 @@ export default function AdminPage() {
     return healthState.columns;
   }, [healthState]);
 
-  const adminFetch = useCallback(async (pathname: string, adminToken: string): Promise<Response> => {
-    const response = await fetch(buildApiUrl(pathname), {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${adminToken}`,
-        Accept: "application/json",
-      },
-      cache: "no-store",
-    });
-
-    if (response.status === 401) {
-      clearStoredToken();
-      setToken(null);
-      setAuthError("Unauthorized. Please enter a valid admin token.");
-      setHealthState({ status: "idle" });
-      throw new Error("unauthorized");
-    }
-
-    return response;
-  }, []);
-
-  const validateToken = useCallback(async (candidateToken: string): Promise<AuthCheckResult> => {
-    try {
-      const response = await adminFetch("/api/admin/coverage", candidateToken);
-      if (!response.ok) {
-        const payload = (await response.json().catch(() => null)) as
-          | { message?: string; error?: string }
-          | null;
-        return {
-          ok: false,
-          reason: "error",
-          message: payload?.message || payload?.error || `Request failed with HTTP ${response.status}`,
-        };
-      }
-      return { ok: true };
-    } catch (error) {
-      if (error instanceof Error && error.message === "unauthorized") {
-        return {
-          ok: false,
-          reason: "unauthorized",
-          message: "Unauthorized. Please enter a valid admin token.",
-        };
-      }
-      return {
-        ok: false,
-        reason: "error",
-        message: error instanceof Error ? error.message : "Failed to verify token.",
-      };
-    }
-  }, [adminFetch]);
-
   async function loadOverview() {
     setOverviewLoading(true);
     setOverviewError(null);
@@ -195,14 +104,12 @@ export default function AdminPage() {
     try {
       const cards = await Promise.all(
         OVERVIEW_CATEGORIES.map(async (category) => {
-          const url = new URL(buildApiUrl("/api/feed"));
+          const url = new URL("/api/feed", window.location.origin);
           url.searchParams.set("category", category.key);
           url.searchParams.set("limit", "1");
           const response = await fetch(url.toString(), {
             method: "GET",
-            headers: {
-              Accept: "application/json",
-            },
+            headers: { Accept: "application/json" },
             cache: "no-store",
           });
           if (!response.ok) {
@@ -227,16 +134,12 @@ export default function AdminPage() {
   }
 
   const loadHealth = useCallback(async () => {
-    if (!token) return;
     setHealthState({ status: "loading" });
 
     try {
-      const response = await adminFetch("/api/scrape/dashboard", token);
+      const response = await adminFetch("/api/scrape/dashboard");
       if (response.status === 404) {
-        setHealthState({
-          status: "unavailable",
-          message: "Endpoint not available.",
-        });
+        setHealthState({ status: "unavailable", message: "Endpoint not available." });
         return;
       }
 
@@ -254,153 +157,21 @@ export default function AdminPage() {
       const columns = pickHealthColumns(rows);
       setHealthState({ status: "ready", rows, columns });
     } catch (error) {
-      if (error instanceof Error && error.message === "unauthorized") {
-        return;
-      }
       setHealthState({
         status: "error",
         message: error instanceof Error ? error.message : "Failed to load health data.",
       });
     }
-  }, [adminFetch, token]);
-
-  useEffect(() => {
-    setMounted(true);
   }, []);
 
   useEffect(() => {
-    if (!mounted) return;
-
-    async function hydrateToken() {
-      const storedToken = readStoredToken();
-      if (!storedToken) {
-        setToken(null);
-        setAuthReady(true);
-        return;
-      }
-
-      const validation = await validateToken(storedToken);
-      if (!validation.ok) {
-        clearStoredToken();
-        setToken(null);
-        setAuthError(validation.message);
-        setAuthReady(true);
-        return;
-      }
-
-      setToken(storedToken);
-      setAuthReady(true);
-    }
-
-    void hydrateToken();
-  }, [mounted, validateToken]);
-
-  useEffect(() => {
-    if (!mounted || !token) return;
     void loadOverview();
-  }, [mounted, token]);
+  }, []);
 
   useEffect(() => {
-    if (!token || activeTab !== "health" || healthState.status !== "idle") return;
+    if (activeTab !== "health" || healthState.status !== "idle") return;
     void loadHealth();
-  }, [token, activeTab, healthState.status, loadHealth]);
-
-  async function handleTokenSubmit(event: FormEvent) {
-    event.preventDefault();
-    const submittedToken = String(tokenInputRef.current?.value || "").trim();
-    if (!submittedToken) {
-      setAuthError("Admin token is required.");
-      return;
-    }
-
-    setAuthLoading(true);
-    setAuthError(null);
-
-    const validation = await validateToken(submittedToken);
-    if (!validation.ok) {
-      clearStoredToken();
-      setToken(null);
-      setAuthError(validation.message);
-      setAuthLoading(false);
-      if (tokenInputRef.current) tokenInputRef.current.value = "";
-      return;
-    }
-
-    storeToken(submittedToken);
-    setToken(submittedToken);
-    setActiveTab("overview");
-    setHealthState({ status: "idle" });
-    setAuthLoading(false);
-    if (tokenInputRef.current) tokenInputRef.current.value = "";
-  }
-
-  function handleLogout() {
-    clearStoredToken();
-    setToken(null);
-    setActiveTab("overview");
-    setAuthError(null);
-    setOverviewCards([]);
-    setOverviewError(null);
-    setHealthState({ status: "idle" });
-  }
-
-  if (!mounted || !authReady) {
-    return (
-      <main className="mx-auto w-full max-w-6xl px-4 py-8 pb-12 sm:px-6">
-        <section className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-soft sm:p-8">
-          <div className="animate-pulse">
-            <div className="h-4 w-32 rounded bg-slate-200" />
-            <div className="mt-4 h-10 w-72 rounded bg-slate-200" />
-            <div className="mt-3 h-4 w-full max-w-2xl rounded bg-slate-200" />
-            <div className="mt-8 h-12 w-full rounded bg-slate-200" />
-          </div>
-        </section>
-      </main>
-    );
-  }
-
-  if (!token) {
-    return (
-      <main className="mx-auto w-full max-w-4xl px-4 py-8 pb-12 sm:px-6">
-        <section className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-soft sm:p-8">
-          <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">Admin</p>
-          <h1 className="mt-4 text-3xl font-semibold tracking-tight text-slate-950">Operations panel</h1>
-          <p className="mt-3 max-w-2xl text-sm leading-7 text-slate-600">
-            Enter the admin token to access overview counts, operational health, and links to
-            operator tools.
-          </p>
-
-          <form onSubmit={handleTokenSubmit} className="mt-8 space-y-4">
-            <label className="block text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
-              Admin token
-              <input
-                ref={tokenInputRef}
-                type="password"
-                className="mt-2 w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-slate-500"
-                placeholder="Enter ADMIN_TOKEN"
-                autoComplete="off"
-                required
-              />
-            </label>
-
-            <button
-              type="submit"
-              disabled={authLoading}
-              className="rounded-2xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {authLoading ? "Checking token..." : "Open admin panel"}
-            </button>
-          </form>
-
-          {authError ? (
-            <p className="mt-5 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-              {authError}
-            </p>
-          ) : null}
-        </section>
-      </main>
-    );
-  }
+  }, [activeTab, healthState.status, loadHealth]);
 
   return (
     <main className="mx-auto w-full max-w-7xl px-4 py-8 pb-12 sm:px-6">
@@ -434,14 +205,6 @@ export default function AdminPage() {
                 );
               })}
             </nav>
-
-            <button
-              type="button"
-              onClick={handleLogout}
-              className="mt-8 w-full rounded-2xl border border-white/15 px-4 py-3 text-sm font-semibold text-slate-200 transition hover:bg-white/10 hover:text-white"
-            >
-              Log out
-            </button>
           </aside>
 
           <div className="px-5 py-6 sm:px-8 sm:py-8">
@@ -622,7 +385,9 @@ export default function AdminPage() {
                       </tbody>
                     </table>
                     {healthState.rows.length === 0 ? (
-                      <p className="px-4 py-4 text-sm text-slate-500">No rows returned by the endpoint.</p>
+                      <p className="px-4 py-4 text-sm text-slate-500">
+                        No rows returned by the endpoint.
+                      </p>
                     ) : null}
                   </div>
                 ) : null}
