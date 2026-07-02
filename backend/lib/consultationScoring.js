@@ -6,7 +6,6 @@ const ARGUMENT_MAX_LENGTH = 600;
 function sanitizePlainText(value, maxLength = ARGUMENT_MAX_LENGTH) {
   const cleaned = String(value || "")
     .replace(/[\u0000-\u001f\u007f]+/g, " ")
-    .replace(/[<>]/g, "")
     .replace(/\s+/g, " ")
     .trim();
   if (!cleaned) return "";

@@ -496,7 +496,7 @@ export default function AdminPage() {
                   })}
                 </div>
 
-                <div className="mt-8 grid gap-4 lg:grid-cols-2">
+                <div className="mt-8 grid gap-4 lg:grid-cols-3">
                   <article className="rounded-[26px] border border-slate-200 bg-white p-5 shadow-sm">
                     <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
                       Coverage
@@ -532,6 +532,25 @@ export default function AdminPage() {
                       className="mt-5 inline-flex rounded-2xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white transition hover:bg-slate-800"
                     >
                       Open create document
+                    </Link>
+                  </article>
+
+                  <article className="rounded-[26px] border border-slate-200 bg-white p-5 shadow-sm">
+                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                      Consultation Matrix
+                    </p>
+                    <h3 className="mt-3 text-xl font-semibold tracking-tight text-slate-950">
+                      Reviewer overrides
+                    </h3>
+                    <p className="mt-3 text-sm leading-7 text-slate-600">
+                      Review automated Konsultime scores, set rubric-based overrides, and revert
+                      indicators back to auto evidence.
+                    </p>
+                    <Link
+                      href="/admin/consultation-scores"
+                      className="mt-5 inline-flex rounded-2xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white transition hover:bg-slate-800"
+                    >
+                      Open review
                     </Link>
                   </article>
                 </div>

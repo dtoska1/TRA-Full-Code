@@ -24,6 +24,7 @@ const { fetchCoverageSummary } = require("./lib/coverageStatus");
 const {
   computeConsultationScore,
   neutralPendingReviewScore,
+  sanitizePlainText,
 } = require("./lib/consultationScoring");
 const {
   detectScrapedAttachmentType,
@@ -2196,6 +2197,18 @@ async function getSystemUserId() {
   return r.rows[0].id;
 }
 
+async function getAdminTokenReviewerUserId() {
+  await pool.query(
+    `INSERT INTO users (email, display_name)
+     VALUES ('admin-token@transparency-radar.local', 'Admin Token Reviewer')
+     ON CONFLICT (email) DO UPDATE SET display_name = EXCLUDED.display_name`
+  );
+  const r = await pool.query(
+    `SELECT id FROM users WHERE email='admin-token@transparency-radar.local' LIMIT 1`
+  );
+  return r.rows[0].id;
+}
+
 // Kept for the Tirana manual endpoint (debugging)
 async function getMunicipalityIdByName(nameSq) {
   const r = await pool.query(
@@ -3043,21 +3056,236 @@ app.get("/api/status/vendime", async (req, res) => {
 });
 
 const CONSULTATION_SCORE_INDICATORS = [
-  { n: 1, name: "Consultation Calendar" },
-  { n: 2, name: "Centralized Digital Register" },
-  { n: 3, name: "Draft Acts & Explanatory Memos" },
-  { n: 4, name: "Legal Timeframe" },
-  { n: 5, name: "Reports & Institutional Responses" },
+  { n: 1, name: "Consultation Calendar", allowedScores: [0, 5, 10, 20] },
+  { n: 2, name: "Centralized Digital Register", allowedScores: [0, 10, 20] },
+  { n: 3, name: "Draft Acts & Explanatory Memos", allowedScores: [0, 5, 10, 20] },
+  { n: 4, name: "Legal Timeframe", allowedScores: [0, 10, 20] },
+  { n: 5, name: "Reports & Institutional Responses", allowedScores: [0, 10, 20] },
 ];
+const CONSULTATION_REVIEW_ARGUMENT_MAX_LENGTH = 1000;
 
 function safePublicScoreText(value, maxLength = 1000) {
-  const cleaned = String(value || "")
-    .replace(/[\u0000-\u001f\u007f]+/g, " ")
-    .replace(/[<>]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!cleaned) return "";
-  return cleaned.length > maxLength ? `${cleaned.slice(0, maxLength - 1).trim()}...` : cleaned;
+  return sanitizePlainText(value, maxLength);
+}
+
+function consultationTierFromTotal(total) {
+  const value = Number(total || 0);
+  if (value >= 90) return "Excellent";
+  if (value >= 75) return "Good";
+  if (value >= 60) return "Moderate";
+  if (value >= 40) return "Weak";
+  return "Critical";
+}
+
+function nullableScore(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function consultationIndicatorAutoValues(scores, n) {
+  const raw = scores?.[`ind${n}`] || null;
+  if (!raw) return null;
+  return {
+    auto_score: Number(raw.auto_score || 0),
+    confidence: safePublicScoreText(raw.confidence, 20) || "low",
+    argument: safePublicScoreText(raw.argument, CONSULTATION_REVIEW_ARGUMENT_MAX_LENGTH),
+  };
+}
+
+async function computeFreshConsultationScoreForAdmin(municipalityId) {
+  try {
+    return await computeConsultationScore(pool, municipalityId);
+  } catch (err) {
+    console.warn(
+      `[consultation-scores.admin] fresh_auto_failed municipality_id=${truncateLogJson(
+        municipalityId
+      )} message=${truncateLogJson(safePublicErrorMessage(err, "auto_preview_failed"))}`
+    );
+    return null;
+  }
+}
+
+function consultationAdminRowToItem(row, freshScores) {
+  let previewTotal = 0;
+  const hasScore = Boolean(row.score_id);
+  const indicators = CONSULTATION_SCORE_INDICATORS.map((indicator) => {
+    const n = indicator.n;
+    const fresh = consultationIndicatorAutoValues(freshScores, n);
+    const overridden = Boolean(row[`ind${n}_overridden`]);
+    const storedAutoScore = nullableScore(row[`ind${n}_auto_score`]);
+    const storedFinalScore = nullableScore(row[`ind${n}_final_score`]);
+    const effectiveScore = nullableScore(row[`ind${n}_effective_score`]);
+    const autoScore = storedAutoScore !== null ? storedAutoScore : fresh?.auto_score || 0;
+    const finalScore = hasScore ? storedFinalScore : null;
+    const score = effectiveScore !== null ? effectiveScore : finalScore !== null ? finalScore : autoScore;
+    previewTotal += Number(score || 0);
+
+    const storedArgument = safePublicScoreText(
+      row[`ind${n}_argument`],
+      CONSULTATION_REVIEW_ARGUMENT_MAX_LENGTH
+    );
+    const autoArgument =
+      fresh?.argument ||
+      (overridden
+        ? "Auto proposal temporarily unavailable. Re-run compute before clearing if this persists."
+        : storedArgument);
+
+    return {
+      n,
+      name: indicator.name,
+      allowed_scores: indicator.allowedScores,
+      auto_score: autoScore,
+      confidence:
+        safePublicScoreText(row[`ind${n}_confidence`], 20) || fresh?.confidence || "low",
+      auto_argument: autoArgument,
+      final_score: finalScore,
+      effective_score: score,
+      argument: storedArgument || autoArgument,
+      overridden,
+    };
+  });
+
+  const total = nullableScore(row.total);
+  return {
+    municipality_key: row.municipality_key,
+    municipality_name: row.municipality_name,
+    has_score: hasScore,
+    total: total !== null ? total : previewTotal,
+    tier: safePublicScoreText(row.tier, 40) || consultationTierFromTotal(previewTotal),
+    computed_at: row.computed_at ? new Date(row.computed_at).toISOString() : null,
+    reviewed_at: row.reviewed_at ? new Date(row.reviewed_at).toISOString() : null,
+    indicators,
+  };
+}
+
+async function loadAdminConsultationScoreItems({ municipalityId = null } = {}) {
+  const params = [];
+  let whereSql = "";
+  if (municipalityId) {
+    params.push(municipalityId);
+    whereSql = `WHERE m.id = $${params.length}`;
+  }
+
+  const result = await pool.query(
+    `
+    SELECT
+      m.id AS municipality_id,
+      lower(m.name_key) AS municipality_key,
+      m.name_sq AS municipality_name,
+      cs.id AS score_id,
+      cs.computed_at,
+      cs.reviewed_at,
+      e.ind1 AS ind1_effective_score,
+      e.ind2 AS ind2_effective_score,
+      e.ind3 AS ind3_effective_score,
+      e.ind4 AS ind4_effective_score,
+      e.ind5 AS ind5_effective_score,
+      e.total,
+      e.tier,
+      cs.ind1_auto_score,
+      cs.ind1_final_score,
+      cs.ind1_confidence,
+      cs.ind1_argument,
+      cs.ind1_overridden,
+      cs.ind2_auto_score,
+      cs.ind2_final_score,
+      cs.ind2_confidence,
+      cs.ind2_argument,
+      cs.ind2_overridden,
+      cs.ind3_auto_score,
+      cs.ind3_final_score,
+      cs.ind3_confidence,
+      cs.ind3_argument,
+      cs.ind3_overridden,
+      cs.ind4_auto_score,
+      cs.ind4_final_score,
+      cs.ind4_confidence,
+      cs.ind4_argument,
+      cs.ind4_overridden,
+      cs.ind5_auto_score,
+      cs.ind5_final_score,
+      cs.ind5_confidence,
+      cs.ind5_argument,
+      cs.ind5_overridden
+    FROM municipalities m
+    LEFT JOIN consultation_scores cs ON cs.municipality_id = m.id
+    LEFT JOIN consultation_scores_effective e ON e.municipality_id = m.id
+    ${whereSql}
+    ORDER BY lower(m.name_sq) ASC, lower(m.name_key) ASC
+    `,
+    params
+  );
+
+  const items = [];
+  for (const row of result.rows) {
+    const freshScores = await computeFreshConsultationScoreForAdmin(row.municipality_id);
+    items.push(consultationAdminRowToItem(row, freshScores));
+  }
+  return items;
+}
+
+function parseRubricScore(value) {
+  if (typeof value === "number" && Number.isInteger(value)) return value;
+  const raw = String(value ?? "").trim();
+  if (/^\d+$/.test(raw)) return Number.parseInt(raw, 10);
+  return null;
+}
+
+function parseConsultationOverridePatch(body) {
+  const indicators = body?.indicators;
+  if (!indicators || typeof indicators !== "object" || Array.isArray(indicators)) {
+    return { error: "Body must include an indicators object." };
+  }
+
+  const entries = Object.entries(indicators);
+  if (entries.length === 0) {
+    return { error: "Patch must include at least one indicator." };
+  }
+
+  const knownIndicators = new Map(
+    CONSULTATION_SCORE_INDICATORS.map((indicator) => [String(indicator.n), indicator])
+  );
+  const changes = [];
+
+  for (const [key, value] of entries) {
+    const indicator = knownIndicators.get(String(key));
+    if (!indicator) {
+      return { error: `Unknown indicator key: ${key}.` };
+    }
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return { error: `Indicator ${key} patch must be an object.` };
+    }
+    if (typeof value.overridden !== "boolean") {
+      return { error: `Indicator ${key} must include overridden true/false.` };
+    }
+
+    if (value.overridden === false) {
+      changes.push({ n: indicator.n, overridden: false });
+      continue;
+    }
+
+    const finalScore = parseRubricScore(value.final_score);
+    if (!indicator.allowedScores.includes(finalScore)) {
+      return {
+        error: `Indicator ${key} final_score must be one of: ${indicator.allowedScores.join(", ")}.`,
+      };
+    }
+
+    const argument = sanitizePlainText(value.argument, CONSULTATION_REVIEW_ARGUMENT_MAX_LENGTH);
+    if (!argument) {
+      return { error: `Indicator ${key} override requires a non-empty argument.` };
+    }
+
+    changes.push({
+      n: indicator.n,
+      overridden: true,
+      finalScore,
+      argument,
+    });
+  }
+
+  return { changes };
 }
 
 function consultationScoreRowToPublic(row) {
@@ -3149,6 +3377,145 @@ app.get("/api/consultation-scores", async (req, res) => {
       ok: false,
       error: "db_error",
       message: "Consultation scores are temporarily unavailable.",
+    });
+  }
+});
+
+app.get("/api/admin/consultation-scores", requireAdmin, async (req, res) => {
+  try {
+    const municipalityRaw = req.query.municipality;
+    let municipalityId = null;
+    if (municipalityRaw !== undefined) {
+      const municipality = String(municipalityRaw).trim().toLowerCase();
+      if (!municipality || !/^[a-z0-9-]{1,64}$/.test(municipality)) {
+        return badRequest(
+          res,
+          "Invalid municipality. Use lowercase slug format (a-z, 0-9, hyphen), max 64 chars."
+        );
+      }
+      municipalityId = await getMunicipalityId({ municipality });
+      if (!municipalityId) {
+        return res.json({ ok: true, municipalities: [] });
+      }
+    }
+
+    const municipalities = await loadAdminConsultationScoreItems({ municipalityId });
+    return res.json({ ok: true, municipalities });
+  } catch (err) {
+    console.warn(
+      `[consultation-scores.admin] read_failed message=${truncateLogJson(
+        safePublicErrorMessage(err, "admin_score_read_failed")
+      )}`
+    );
+    return res.status(500).json({
+      ok: false,
+      error: "db_error",
+      message: "Consultation score review data is temporarily unavailable.",
+    });
+  }
+});
+
+app.patch("/api/admin/consultation-scores/:municipality", requireAdmin, async (req, res) => {
+  const municipalityParam = String(req.params.municipality || "").trim().toLowerCase();
+  if (!municipalityParam || !/^[a-z0-9-]{1,64}$/.test(municipalityParam)) {
+    return badRequest(
+      res,
+      "Invalid municipality. Use lowercase slug format (a-z, 0-9, hyphen), max 64 chars."
+    );
+  }
+
+  const parsed = parseConsultationOverridePatch(req.body);
+  if (parsed.error) return badRequest(res, parsed.error);
+
+  try {
+    const municipalityId = await getMunicipalityId({ municipality: municipalityParam });
+    if (!municipalityId) {
+      return res.status(404).json({
+        ok: false,
+        error: "not_found",
+        message: "Municipality not found.",
+      });
+    }
+
+    const existing = await pool.query(
+      `SELECT id FROM consultation_scores WHERE municipality_id = $1 LIMIT 1`,
+      [municipalityId]
+    );
+    if (!existing.rowCount) {
+      return res.status(409).json({
+        ok: false,
+        error: "score_not_computed",
+        message: "Run consultation score compute before saving reviewer overrides.",
+      });
+    }
+
+    const hasClear = parsed.changes.some((change) => change.overridden === false);
+    const freshScores = hasClear ? await computeConsultationScore(pool, municipalityId) : null;
+    const reviewerUserId = await getAdminTokenReviewerUserId();
+
+    const assignments = [];
+    const params = [];
+    for (const change of parsed.changes) {
+      if (change.overridden) {
+        params.push(change.finalScore);
+        const scoreParam = `$${params.length}`;
+        params.push(change.argument);
+        const argumentParam = `$${params.length}`;
+        assignments.push(`ind${change.n}_overridden = TRUE`);
+        assignments.push(`ind${change.n}_final_score = ${scoreParam}`);
+        assignments.push(`ind${change.n}_argument = ${argumentParam}`);
+      } else {
+        const fresh = consultationIndicatorAutoValues(freshScores, change.n);
+        const autoArgument =
+          fresh?.argument ||
+          "Auto proposal temporarily unavailable. Re-run compute before reviewing this indicator.";
+        params.push(autoArgument);
+        const argumentParam = `$${params.length}`;
+        assignments.push(`ind${change.n}_overridden = FALSE`);
+        assignments.push(`ind${change.n}_final_score = NULL`);
+        assignments.push(`ind${change.n}_argument = ${argumentParam}`);
+      }
+    }
+
+    params.push(reviewerUserId);
+    const reviewerParam = `$${params.length}`;
+    params.push(municipalityId);
+    const municipalityParamSql = `$${params.length}`;
+
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        `
+        UPDATE consultation_scores
+        SET
+          ${assignments.join(",\n          ")},
+          reviewed_by = ${reviewerParam},
+          reviewed_at = now()
+        WHERE municipality_id = ${municipalityParamSql}
+        `,
+        params
+      );
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    const items = await loadAdminConsultationScoreItems({ municipalityId });
+    return res.json({ ok: true, municipality: items[0] || null });
+  } catch (err) {
+    console.warn(
+      `[consultation-scores.admin] patch_failed municipality=${truncateLogJson(
+        municipalityParam
+      )} message=${truncateLogJson(safePublicErrorMessage(err, "admin_score_patch_failed"))}`
+    );
+    return res.status(500).json({
+      ok: false,
+      error: "db_error",
+      message: "Consultation score review update failed.",
     });
   }
 });
