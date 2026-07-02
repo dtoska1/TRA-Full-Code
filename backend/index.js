@@ -15,6 +15,7 @@ const morgan = require("morgan");
 const rateLimit = require("express-rate-limit");
 const multer = require("multer");
 const cheerio = require("cheerio");
+const bcrypt = require("bcrypt");
 const { Pool } = require("pg");
 const dns = require("dns");
 const net = require("net");
@@ -60,6 +61,14 @@ const {
 const {
   rebuildProkurimeRecordForItem,
 } = require("./lib/prokurimeRecords");
+const {
+  clearSessionCookie,
+  createSession,
+  destroySession,
+  readSessionCookie,
+  setSessionCookie,
+  validateSession,
+} = require("./lib/adminAuth");
 
 console.log("LOADED INDEX.JS FROM:", __filename);
 
@@ -68,6 +77,8 @@ app.disable("x-powered-by");
 
 const NODE_ENV = String(process.env.NODE_ENV || "development").toLowerCase();
 const ADMIN_TOKEN = String(process.env.ADMIN_TOKEN || "").trim();
+const DUMMY_BCRYPT_HASH =
+  "$2b$10$CwTycUXWue0Thq9StjUM0uJ8Xc6QnZpMyQ4qq4LYEaQOa6vH.M.Pi";
 const PUBLIC_ORIGINS = String(process.env.PUBLIC_ORIGINS || "")
   .split(",")
   .map((s) => s.trim())
@@ -179,7 +190,45 @@ const adminLimiter = rateLimit({
 });
 app.use("/api/admin", adminLimiter);
 
-function requireAdmin(req, res, next) {
+const authLoginLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: Number(process.env.AUTH_LOGIN_RATE_LIMIT_MAX || 10),
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    error: "rate_limited",
+    message: "Too many login attempts, please try again later.",
+  },
+});
+
+async function requireAdmin(req, res, next) {
+  try {
+    const rawSessionToken = readSessionCookie(req);
+    if (rawSessionToken) {
+      try {
+        const session = await validateSession(pool, rawSessionToken);
+        if (session?.user) {
+          req.adminUser = session.user;
+          req.adminAuthMethod = "session";
+          return next();
+        }
+      } catch (err) {
+        console.warn(
+          `[admin.auth] session_validation_failed message=${truncateLogJson(
+            safePublicErrorMessage(err, "session_validation_failed")
+          )}`
+        );
+      }
+    }
+  } catch (err) {
+    console.warn(
+      `[admin.auth] session_cookie_failed message=${truncateLogJson(
+        safePublicErrorMessage(err, "session_cookie_failed")
+      )}`
+    );
+  }
+
   if (!ADMIN_TOKEN) {
     return res.status(503).json({
       ok: false,
@@ -193,7 +242,10 @@ function requireAdmin(req, res, next) {
   const headerToken = String(req.headers["x-admin-token"] || "").trim();
   const token = bearer || headerToken;
 
-  if (token && token === ADMIN_TOKEN) return next();
+  if (token && token === ADMIN_TOKEN) {
+    req.adminAuthMethod = "token";
+    return next();
+  }
 
   return res.status(401).json({
     ok: false,
@@ -226,6 +278,123 @@ if (!String(process.env.DATABASE_URL || "").trim()) {
   );
   process.exit(1);
 }
+
+function authUserPayload(user) {
+  return {
+    email: String(user?.email || ""),
+    display_name: String(user?.display_name || ""),
+  };
+}
+
+function invalidCredentials(res) {
+  return res.status(401).json({
+    ok: false,
+    error: "invalid_credentials",
+  });
+}
+
+function unauthorizedSession(res) {
+  return res.status(401).json({
+    ok: false,
+    error: "unauthorized",
+    message: "Missing or invalid session.",
+  });
+}
+
+async function comparePasswordSafely(password, passwordHash) {
+  try {
+    return await bcrypt.compare(String(password || ""), passwordHash || DUMMY_BCRYPT_HASH);
+  } catch {
+    return false;
+  }
+}
+
+app.post("/api/auth/login", authLoginLimiter, async (req, res) => {
+  const rawEmail = String(req.body?.email || "").trim();
+  const password = typeof req.body?.password === "string" ? req.body.password : "";
+  const email = rawEmail.slice(0, 254);
+
+  try {
+    let user = null;
+    if (email && password) {
+      const result = await pool.query(
+        `
+        SELECT id, email, display_name, password_hash, is_active
+        FROM users
+        WHERE email = $1
+        LIMIT 1
+        `,
+        [email]
+      );
+      user = result.rowCount ? result.rows[0] : null;
+    }
+
+    const passwordOk = await comparePasswordSafely(password, user?.password_hash);
+    if (!user || user.is_active !== true || !user.password_hash || !passwordOk) {
+      return invalidCredentials(res);
+    }
+
+    const session = await createSession(pool, user.id, req.headers["user-agent"]);
+    setSessionCookie(res, session.rawToken, session.expiresAt);
+
+    return res.json({
+      ok: true,
+      user: authUserPayload(user),
+    });
+  } catch (err) {
+    console.warn(
+      `[admin.auth] login_failed message=${truncateLogJson(
+        safePublicErrorMessage(err, "login_failed")
+      )}`
+    );
+    return invalidCredentials(res);
+  }
+});
+
+app.post("/api/auth/logout", async (req, res) => {
+  const rawSessionToken = readSessionCookie(req);
+  try {
+    if (rawSessionToken) {
+      await destroySession(pool, rawSessionToken);
+    }
+    clearSessionCookie(res);
+    return res.json({ ok: true });
+  } catch (err) {
+    clearSessionCookie(res);
+    console.warn(
+      `[admin.auth] logout_failed message=${truncateLogJson(
+        safePublicErrorMessage(err, "logout_failed")
+      )}`
+    );
+    return res.status(500).json({
+      ok: false,
+      error: "logout_failed",
+      message: "Logout failed.",
+    });
+  }
+});
+
+app.get("/api/auth/me", async (req, res) => {
+  try {
+    const rawSessionToken = readSessionCookie(req);
+    if (!rawSessionToken) return unauthorizedSession(res);
+
+    const session = await validateSession(pool, rawSessionToken);
+    if (!session?.user) return unauthorizedSession(res);
+
+    return res.json({
+      ok: true,
+      user: authUserPayload(session.user),
+    });
+  } catch (err) {
+    console.warn(
+      `[admin.auth] me_failed message=${truncateLogJson(
+        safePublicErrorMessage(err, "session_validation_failed")
+      )}`
+    );
+    return unauthorizedSession(res);
+  }
+});
 
 const HTTP_403_COOLDOWN_MINUTES = (() => {
   const raw = Number.parseInt(String(process.env.HTTP_403_COOLDOWN_MINUTES || ""), 10);
@@ -3451,7 +3620,7 @@ app.patch("/api/admin/consultation-scores/:municipality", requireAdmin, async (r
 
     const hasClear = parsed.changes.some((change) => change.overridden === false);
     const freshScores = hasClear ? await computeConsultationScore(pool, municipalityId) : null;
-    const reviewerUserId = await getAdminTokenReviewerUserId();
+    const reviewerUserId = req.adminUser?.id || (await getAdminTokenReviewerUserId());
 
     const assignments = [];
     const params = [];
