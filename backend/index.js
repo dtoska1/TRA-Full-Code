@@ -131,6 +131,7 @@ app.use(
       if (originAllowlist.has(origin)) return cb(null, true);
       return cb(new Error("CORS blocked: origin not allowed"), false);
     },
+    credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization", "X-Admin-Token"],
     maxAge: 86400,
