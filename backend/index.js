@@ -3042,6 +3042,117 @@ app.get("/api/status/vendime", async (req, res) => {
   }
 });
 
+const CONSULTATION_SCORE_INDICATORS = [
+  { n: 1, name: "Consultation Calendar" },
+  { n: 2, name: "Centralized Digital Register" },
+  { n: 3, name: "Draft Acts & Explanatory Memos" },
+  { n: 4, name: "Legal Timeframe" },
+  { n: 5, name: "Reports & Institutional Responses" },
+];
+
+function safePublicScoreText(value, maxLength = 1000) {
+  const cleaned = String(value || "")
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    .replace(/[<>]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleaned) return "";
+  return cleaned.length > maxLength ? `${cleaned.slice(0, maxLength - 1).trim()}...` : cleaned;
+}
+
+function consultationScoreRowToPublic(row) {
+  return {
+    municipality_key: row.municipality_key,
+    municipality_name: row.municipality_name,
+    total: Number(row.total || 0),
+    tier: safePublicScoreText(row.tier, 40),
+    indicators: CONSULTATION_SCORE_INDICATORS.map((indicator) => ({
+      n: indicator.n,
+      name: indicator.name,
+      score: Number(row[`ind${indicator.n}_score`] || 0),
+      max: 20,
+      confidence: safePublicScoreText(row[`ind${indicator.n}_confidence`], 20) || "low",
+      argument: safePublicScoreText(row[`ind${indicator.n}_argument`], 1000),
+    })),
+    computed_at: row.computed_at ? new Date(row.computed_at).toISOString() : null,
+  };
+}
+
+app.get("/api/consultation-scores", async (req, res) => {
+  try {
+    const municipalityRaw = req.query.municipality;
+    let municipalityId = null;
+    if (municipalityRaw !== undefined) {
+      const municipality = String(municipalityRaw).trim().toLowerCase();
+      if (!municipality || !/^[a-z0-9-]{1,64}$/.test(municipality)) {
+        return badRequest(
+          res,
+          "Invalid municipality. Use lowercase slug format (a-z, 0-9, hyphen), max 64 chars."
+        );
+      }
+      municipalityId = await getMunicipalityId({ municipality });
+      if (!municipalityId) {
+        return res.json({ ok: true, municipalities: [] });
+      }
+    }
+
+    const params = [];
+    let whereSql = "";
+    if (municipalityId) {
+      params.push(municipalityId);
+      whereSql = `WHERE e.municipality_id = $${params.length}`;
+    }
+
+    const result = await pool.query(
+      `
+      SELECT
+        e.municipality_key,
+        m.name_sq AS municipality_name,
+        e.ind1 AS ind1_score,
+        e.ind2 AS ind2_score,
+        e.ind3 AS ind3_score,
+        e.ind4 AS ind4_score,
+        e.ind5 AS ind5_score,
+        e.total,
+        e.tier,
+        e.computed_at,
+        cs.ind1_confidence,
+        cs.ind1_argument,
+        cs.ind2_confidence,
+        cs.ind2_argument,
+        cs.ind3_confidence,
+        cs.ind3_argument,
+        cs.ind4_confidence,
+        cs.ind4_argument,
+        cs.ind5_confidence,
+        cs.ind5_argument
+      FROM consultation_scores_effective e
+      JOIN consultation_scores cs ON cs.municipality_id = e.municipality_id
+      JOIN municipalities m ON m.id = e.municipality_id
+      ${whereSql}
+      ORDER BY e.total DESC, lower(m.name_sq) ASC, e.municipality_key ASC
+      `,
+      params
+    );
+
+    return res.json({
+      ok: true,
+      municipalities: result.rows.map(consultationScoreRowToPublic),
+    });
+  } catch (err) {
+    console.warn(
+      `[consultation-scores.public] failed message=${truncateLogJson(
+        safePublicErrorMessage(err, "score_read_failed")
+      )}`
+    );
+    return res.status(500).json({
+      ok: false,
+      error: "db_error",
+      message: "Consultation scores are temporarily unavailable.",
+    });
+  }
+});
+
 function consultationIndicatorValues(scores, key) {
   const item = scores?.[key] || {};
   return {

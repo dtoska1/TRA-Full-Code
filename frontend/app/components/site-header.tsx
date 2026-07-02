@@ -4,6 +4,7 @@ const mainLinks = [
   { href: "/vendime", label: "Vendime" },
   { href: "/prokurime", label: "Prokurime" },
   { href: "/konsultime", label: "Konsultime" },
+  { href: "/konsultime/radar", label: "Radar" },
 ];
 
 export default function SiteHeader() {
