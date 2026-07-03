@@ -11,6 +11,10 @@ const {
 } = require("./konsultimeUtils");
 
 const DEFAULT_LISTING_URL = "https://bashkiapogradec.gov.al/publikime-kategori/konsultim-publik-10/";
+const COUNCIL_CONSULTATIONS_URL =
+  "https://bashkiapogradec.gov.al/publikime-kategori/konsultimet-publike-te-keshillit-bashkiak-17/";
+const ANNUAL_CALENDAR_URL =
+  "https://bashkiapogradec.gov.al/faqe/kalendari-vjetor-i-keshillit-bashkiak-pogradec-23/";
 const SOURCE_ORIGIN = "bashkiapogradec.gov.al";
 const YEAR_FLOOR = 2023;
 const YEAR_FLOOR_DATE = `${YEAR_FLOOR}-01-01`;
@@ -100,7 +104,7 @@ function collectPogradecKonsultimeDocuments($, pageUrl = DEFAULT_LISTING_URL) {
   const documents = [];
   const seen = new Set();
   const scopes = $("article, .entry-content, main, section.single-content, .single-content");
-  const root = scopes.length ? scopes : $("body");
+  if (!scopes.length) return documents;
 
   function addDocument(url, label) {
     const normalizedUrl = normalizePogradecDocumentUrl(url, pageUrl);
@@ -112,12 +116,12 @@ function collectPogradecKonsultimeDocuments($, pageUrl = DEFAULT_LISTING_URL) {
     });
   }
 
-  root.find("a[href]").each((_, el) => {
+  scopes.find("a[href]").each((_, el) => {
     const link = $(el);
     addDocument(link.attr("href") || "", link.text());
   });
 
-  root.each((_, el) => {
+  scopes.each((_, el) => {
     const node = $(el);
     const scopedHtml = `${node.html() || ""} ${node.text() || ""}`;
     for (const rawUrl of collectRawDocumentUrls(scopedHtml)) {
@@ -182,7 +186,12 @@ function parsePogradecKonsultimeHtml(html, pageUrl = DEFAULT_LISTING_URL) {
   const items = [];
   const seen = new Set();
 
-  $('h3.grid-title a[href*="/publikime/konsultim-publik-10/"]').each((_, el) => {
+  $(
+    [
+      'h3.grid-title a[href*="/publikime/konsultim-publik-10/"]',
+      'h3.grid-title a[href*="/publikime/konsultimet-publike-te-keshillit-bashkiak-17/"]',
+    ].join(",")
+  ).each((_, el) => {
     const link = $(el);
     const title = cleanText(link.text());
     const href = link.attr("href") || "";
@@ -215,9 +224,36 @@ function parsePogradecKonsultimeHtml(html, pageUrl = DEFAULT_LISTING_URL) {
   return items;
 }
 
-async function scrapePogradecKonsultime({ url, year, limit = 50, pageStart = 1 }) {
-  const siteUrl = url || DEFAULT_LISTING_URL;
-  const lim = Math.max(1, Math.min(200, Number(limit) || 50));
+function sortPogradecItems(items) {
+  return [...items].sort((left, right) => {
+    const dateCompare = String(right.published_date || "").localeCompare(
+      String(left.published_date || "")
+    );
+    if (dateCompare) return dateCompare;
+    return String(left.title || "").localeCompare(String(right.title || ""));
+  });
+}
+
+function parsePogradecDateFromDocumentUrls(documents) {
+  const dates = [];
+  for (const document of Array.isArray(documents) ? documents : []) {
+    const rawUrl = String(document?.url || "");
+    const matches = rawUrl.match(/\b(\d{2})(\d{2})(20\d{2})\d{4}\b/g) || [];
+    for (const rawMatch of matches) {
+      const match = rawMatch.match(/^(\d{2})(\d{2})(20\d{2})/);
+      if (!match) continue;
+      const [, dayRaw, monthRaw, year] = match;
+      const day = Number.parseInt(dayRaw, 10);
+      const month = Number.parseInt(monthRaw, 10);
+      if (!Number.isInteger(day) || day < 1 || day > 31) continue;
+      if (!Number.isInteger(month) || month < 1 || month > 12) continue;
+      dates.push(`${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`);
+    }
+  }
+  return dates.sort().pop() || null;
+}
+
+async function scrapePogradecListingSource({ siteUrl, year, pageStart = 1 }) {
   const wantedYear = Number.isInteger(Number(year)) ? Number(year) : null;
   const startPage = Math.max(1, Number(pageStart) || 1);
   const items = [];
@@ -227,7 +263,7 @@ async function scrapePogradecKonsultime({ url, year, limit = 50, pageStart = 1 }
   let detailFetchFailures = 0;
   let pageUrl = siteUrl;
 
-  for (let page = 1; pageUrl && page <= MAX_PAGES && items.length < lim; page += 1) {
+  for (let page = 1; pageUrl && page <= MAX_PAGES; page += 1) {
     if (visitedPageUrls.has(pageUrl)) break;
     visitedPageUrls.add(pageUrl);
 
@@ -244,7 +280,6 @@ async function scrapePogradecKonsultime({ url, year, limit = 50, pageStart = 1 }
     const pageItems = parsePogradecKonsultimeHtml(fetched.html, currentUrl);
     let newOnPage = 0;
     for (const item of pageItems) {
-      if (items.length >= lim) break;
       if (wantedYear && Number(String(item.published_date).slice(0, 4)) !== wantedYear) continue;
       if (seenSourceUrls.has(item.source_url)) continue;
       seenSourceUrls.add(item.source_url);
@@ -271,7 +306,7 @@ async function scrapePogradecKonsultime({ url, year, limit = 50, pageStart = 1 }
     }
 
     if (page === startPage && pageItems.length === 0) {
-      throw new Error("Pogradec official Konsultime scraper found no cards.");
+      break;
     }
 
     const listingDates = parseAllListingDates(fetched.html);
@@ -286,11 +321,8 @@ async function scrapePogradecKonsultime({ url, year, limit = 50, pageStart = 1 }
   }
 
   return {
-    url: siteUrl,
     items,
     meta: {
-      source_origin: SOURCE_ORIGIN,
-      custom_official_scraper: true,
       visited_pages: visitedPageUrls.size,
       detail_pages_fetched: detailPagesFetched,
       detail_fetch_failures: detailFetchFailures,
@@ -302,7 +334,129 @@ async function scrapePogradecKonsultime({ url, year, limit = 50, pageStart = 1 }
   };
 }
 
+async function scrapePogradecCalendarEvidence({ year }) {
+  const wantedYear = Number.isInteger(Number(year)) ? Number(year) : null;
+  try {
+    const fetched = await fetchHtml(ANNUAL_CALENDAR_URL);
+    if (!fetched.ok) return { item: null, fetched: 0, failures: 1, documents: 0 };
+
+    const $ = cheerio.load(fetched.html);
+    const documents = collectPogradecKonsultimeDocuments($, fetched.url || ANNUAL_CALENDAR_URL);
+    if (!documents.length) return { item: null, fetched: 1, failures: 0, documents: 0 };
+
+    const publishedDate = parsePogradecDateFromDocumentUrls(documents);
+    if (!publishedDate || publishedDate < YEAR_FLOOR_DATE) {
+      return { item: null, fetched: 1, failures: 0, documents: documents.length };
+    }
+    if (wantedYear && Number(String(publishedDate).slice(0, 4)) !== wantedYear) {
+      return { item: null, fetched: 1, failures: 0, documents: documents.length };
+    }
+
+    const title = `Kalendari Vjetor i Këshillit Bashkiak dhe Plani i Konsultimeve Publike ${String(
+      publishedDate
+    ).slice(0, 4)}`;
+    return {
+      item: {
+        title,
+        title_normalized: normalizeTitle(title),
+        summary:
+          "Kalendari vjetor i aktivitetit te Keshillit Bashkiak dhe plani i Konsultimeve Publike.",
+        published_date: publishedDate,
+        source_url: fetched.url || ANNUAL_CALENDAR_URL,
+        source_page_url: fetched.url || ANNUAL_CALENDAR_URL,
+        source_origin: SOURCE_ORIGIN,
+        kind: "consultation_notice",
+        is_unofficial_proxy: false,
+        documents,
+      },
+      fetched: 1,
+      failures: 0,
+      documents: documents.length,
+    };
+  } catch {
+    return { item: null, fetched: 0, failures: 1, documents: 0 };
+  }
+}
+
+function getPogradecSourceUrls(siteUrl) {
+  const sourceUrls = new Set([siteUrl || DEFAULT_LISTING_URL, DEFAULT_LISTING_URL, COUNCIL_CONSULTATIONS_URL]);
+  return Array.from(sourceUrls).filter(Boolean);
+}
+
+async function scrapePogradecKonsultime({ url, year, limit = 50, pageStart = 1 }) {
+  const siteUrl = url || DEFAULT_LISTING_URL;
+  const lim = Math.max(1, Math.min(200, Number(limit) || 50));
+  const mergedItems = [];
+  const seenSourceUrls = new Set();
+  const sourceMetas = [];
+  let visitedPages = 0;
+  let detailPagesFetched = 0;
+  let detailFetchFailures = 0;
+  let documentLinks = 0;
+
+  for (const sourceUrl of getPogradecSourceUrls(siteUrl)) {
+    const result = await scrapePogradecListingSource({
+      siteUrl: sourceUrl,
+      year,
+      pageStart,
+    });
+    sourceMetas.push({
+      url: sourceUrl,
+      items: result.items.length,
+      ...result.meta,
+    });
+    visitedPages += result.meta.visited_pages;
+    detailPagesFetched += result.meta.detail_pages_fetched;
+    detailFetchFailures += result.meta.detail_fetch_failures;
+    documentLinks += result.meta.document_links;
+
+    for (const item of result.items) {
+      if (seenSourceUrls.has(item.source_url)) continue;
+      seenSourceUrls.add(item.source_url);
+      mergedItems.push(item);
+    }
+  }
+
+  const calendarEvidence = await scrapePogradecCalendarEvidence({ year });
+  detailPagesFetched += calendarEvidence.fetched;
+  detailFetchFailures += calendarEvidence.failures;
+  documentLinks += calendarEvidence.item
+    ? calendarEvidence.item.documents.length
+    : calendarEvidence.documents;
+  if (calendarEvidence.item && !seenSourceUrls.has(calendarEvidence.item.source_url)) {
+    seenSourceUrls.add(calendarEvidence.item.source_url);
+    mergedItems.push(calendarEvidence.item);
+  }
+
+  const items = sortPogradecItems(mergedItems).slice(0, lim);
+
+  if (items.length === 0) {
+    throw new Error("Pogradec official Konsultime scraper found no cards.");
+  }
+
+  return {
+    url: siteUrl,
+    items,
+    meta: {
+      source_origin: SOURCE_ORIGIN,
+      custom_official_scraper: true,
+      visited_pages: visitedPages,
+      detail_pages_fetched: detailPagesFetched,
+      detail_fetch_failures: detailFetchFailures,
+      document_links: items.reduce(
+        (total, item) => total + (Array.isArray(item.documents) ? item.documents.length : 0),
+        0
+      ),
+      document_links_discovered: documentLinks,
+      sources: sourceMetas,
+      supplemental_calendar_included: Boolean(calendarEvidence.item),
+    },
+  };
+}
+
 module.exports = {
+  ANNUAL_CALENDAR_URL,
+  COUNCIL_CONSULTATIONS_URL,
   classifyKind,
   collectPogradecKonsultimeDocuments,
   getPogradecKonsultimeNextPageUrl,
