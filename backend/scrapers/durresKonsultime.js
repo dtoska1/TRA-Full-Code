@@ -12,6 +12,8 @@ const {
 } = require("./konsultimeUtils");
 
 const DEFAULT_LISTING_URL = "https://durres.gov.al/konsultimet-publike/";
+const SUMMARY_REPORTS_URL =
+  "https://durres.gov.al/2026/06/10/raporte-permbledhese-per-konsultime-publike/";
 const SOURCE_ORIGIN = "durres.gov.al";
 const YEAR_FLOOR = 2023;
 const YEAR_FLOOR_DATE = `${YEAR_FLOOR}-01-01`;
@@ -141,9 +143,9 @@ function collectDurresKonsultimeDocuments($, pageUrl = DEFAULT_LISTING_URL) {
   const documents = [];
   const seen = new Set();
   const scopes = $("article, .entry-content, .elementor-widget-theme-post-content, main");
-  const root = scopes.length ? scopes : $("body");
+  if (!scopes.length) return documents;
 
-  root.find("a[href]").each((_, el) => {
+  scopes.find("a[href]").each((_, el) => {
     const link = $(el);
     const url = normalizeDurresDocumentUrl(link.attr("href") || "", pageUrl);
     if (!url || seen.has(url)) return;
@@ -324,17 +326,42 @@ function getDurresKonsultimeNextPageUrl(html, currentUrl = DEFAULT_LISTING_URL) 
   return null;
 }
 
-async function scrapeDurresKonsultime({ url, year, limit = 50, pageStart = 1 }) {
-  const siteUrl = url || DEFAULT_LISTING_URL;
-  const lim = Math.max(1, Math.min(200, Number(limit) || 50));
+function sortDurresItems(items) {
+  return [...items].sort((left, right) => {
+    const dateCompare = String(right.published_date || "").localeCompare(
+      String(left.published_date || "")
+    );
+    if (dateCompare) return dateCompare;
+    return String(left.title || "").localeCompare(String(right.title || ""));
+  });
+}
+
+async function fetchDurresDetailItem(detailUrl, sourcePageUrl) {
+  try {
+    const detailFetched = await fetchHtml(detailUrl);
+    if (!detailFetched.ok) return { item: null, fetched: 0, failed: 1 };
+    const item = parseDurresKonsultimeDetailHtml(
+      detailFetched.html,
+      detailFetched.url || detailUrl,
+      sourcePageUrl,
+    );
+    return { item, fetched: 1, failed: item ? 0 : 1 };
+  } catch {
+    return { item: null, fetched: 0, failed: 1 };
+  }
+}
+
+async function scrapeDurresListingSource({ siteUrl, year, pageStart = 1 }) {
   const wantedYear = Number.isInteger(Number(year)) ? Number(year) : null;
   const startPage = Math.max(1, Number(pageStart) || 1);
   const items = [];
   const seenSourceUrls = new Set();
   const visitedPageUrls = new Set();
+  let detailPagesFetched = 0;
+  let detailFetchFailures = 0;
   let pageUrl = siteUrl;
 
-  for (let page = 1; pageUrl && page <= MAX_PAGES && items.length < lim; page += 1) {
+  for (let page = 1; pageUrl && page <= MAX_PAGES; page += 1) {
     if (visitedPageUrls.has(pageUrl)) break;
     visitedPageUrls.add(pageUrl);
 
@@ -355,21 +382,13 @@ async function scrapeDurresKonsultime({ url, year, limit = 50, pageStart = 1 }) 
 
     let newOnPage = 0;
     for (const detailUrl of detailUrls) {
-      if (items.length >= lim) break;
       if (seenSourceUrls.has(detailUrl)) continue;
 
-      let item = null;
-      try {
-        const detailFetched = await fetchHtml(detailUrl);
-        if (!detailFetched.ok) continue;
-        item = parseDurresKonsultimeDetailHtml(
-          detailFetched.html,
-          detailFetched.url || detailUrl,
-          currentUrl,
-        );
-      } catch {
-        item = null;
-      }
+      const detailResult = await fetchDurresDetailItem(detailUrl, currentUrl);
+      detailPagesFetched += detailResult.fetched;
+      detailFetchFailures += detailResult.failed;
+
+      const item = detailResult.item;
       if (!item) continue;
       if (wantedYear && Number(String(item.published_date).slice(0, 4)) !== wantedYear) continue;
       if (seenSourceUrls.has(item.source_url)) continue;
@@ -385,17 +404,130 @@ async function scrapeDurresKonsultime({ url, year, limit = 50, pageStart = 1 }) 
   }
 
   return {
-    url: siteUrl,
     items,
+    meta: {
+      visited_pages: visitedPageUrls.size,
+      detail_pages_fetched: detailPagesFetched,
+      detail_fetch_failures: detailFetchFailures,
+      document_links: items.reduce(
+        (total, item) => total + (Array.isArray(item.documents) ? item.documents.length : 0),
+        0
+      ),
+    },
+  };
+}
+
+async function scrapeDurresSummaryReportsSource({ year }) {
+  const wantedYear = Number.isInteger(Number(year)) ? Number(year) : null;
+  const detailResult = await fetchDurresDetailItem(SUMMARY_REPORTS_URL, SUMMARY_REPORTS_URL);
+  const item = detailResult.item;
+  if (!item) {
+    return {
+      item: null,
+      meta: {
+        detail_pages_fetched: detailResult.fetched,
+        detail_fetch_failures: detailResult.failed,
+        document_links: 0,
+      },
+    };
+  }
+
+  if (wantedYear && Number(String(item.published_date).slice(0, 4)) !== wantedYear) {
+    return {
+      item: null,
+      meta: {
+        detail_pages_fetched: detailResult.fetched,
+        detail_fetch_failures: detailResult.failed,
+        document_links: item.documents.length,
+      },
+    };
+  }
+
+  return {
+    item,
+    meta: {
+      detail_pages_fetched: detailResult.fetched,
+      detail_fetch_failures: detailResult.failed,
+      document_links: item.documents.length,
+    },
+  };
+}
+
+function getDurresSourceUrls(siteUrl) {
+  const sourceUrls = new Set([siteUrl || DEFAULT_LISTING_URL, DEFAULT_LISTING_URL]);
+  return Array.from(sourceUrls).filter(Boolean);
+}
+
+async function scrapeDurresKonsultime({ url, year, limit = 50, pageStart = 1 }) {
+  const siteUrl = url || DEFAULT_LISTING_URL;
+  const lim = Math.max(1, Math.min(200, Number(limit) || 50));
+  const items = [];
+  const seenSourceUrls = new Set();
+  const sourceMetas = [];
+  let visitedPages = 0;
+  let detailPagesFetched = 0;
+  let detailFetchFailures = 0;
+  let documentLinksDiscovered = 0;
+
+  for (const sourceUrl of getDurresSourceUrls(siteUrl)) {
+    const result = await scrapeDurresListingSource({
+      siteUrl: sourceUrl,
+      year,
+      pageStart,
+    });
+    sourceMetas.push({
+      url: sourceUrl,
+      items: result.items.length,
+      ...result.meta,
+    });
+    visitedPages += result.meta.visited_pages;
+    detailPagesFetched += result.meta.detail_pages_fetched;
+    detailFetchFailures += result.meta.detail_fetch_failures;
+    documentLinksDiscovered += result.meta.document_links;
+
+    for (const item of result.items) {
+      if (seenSourceUrls.has(item.source_url)) continue;
+      seenSourceUrls.add(item.source_url);
+      items.push(item);
+    }
+  }
+
+  const reports = await scrapeDurresSummaryReportsSource({ year });
+  detailPagesFetched += reports.meta.detail_pages_fetched;
+  detailFetchFailures += reports.meta.detail_fetch_failures;
+  documentLinksDiscovered += reports.meta.document_links;
+  if (reports.item && !seenSourceUrls.has(reports.item.source_url)) {
+    seenSourceUrls.add(reports.item.source_url);
+    items.push(reports.item);
+  }
+
+  const limitedItems = sortDurresItems(items).slice(0, lim);
+  if (!limitedItems.length) {
+    throw new Error("Durres official Konsultime scraper found no detail-post URLs.");
+  }
+
+  return {
+    url: siteUrl,
+    items: limitedItems,
     meta: {
       source_origin: SOURCE_ORIGIN,
       custom_official_scraper: true,
-      visited_pages: visitedPageUrls.size,
+      visited_pages: visitedPages,
+      detail_pages_fetched: detailPagesFetched,
+      detail_fetch_failures: detailFetchFailures,
+      document_links: limitedItems.reduce(
+        (total, item) => total + (Array.isArray(item.documents) ? item.documents.length : 0),
+        0
+      ),
+      document_links_discovered: documentLinksDiscovered,
+      sources: sourceMetas,
+      summary_reports_included: Boolean(reports.item),
     },
   };
 }
 
 module.exports = {
+  SUMMARY_REPORTS_URL,
   classifyKind,
   getDurresKonsultimeNextPageUrl,
   collectDurresKonsultimeDocuments,

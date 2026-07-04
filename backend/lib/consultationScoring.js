@@ -108,18 +108,32 @@ function isDraftActEvidence(evidence) {
 }
 
 function isConsultationResponseEvidence(evidence) {
-  const text = evidence.attachmentText;
-  if (hasPhrase(text, "procesverbal")) return false;
-  if (hasPhrase(text, "raport permbledhes") || hasPhrase(text, "raport permbledhese")) {
+  const attachmentText = evidence.attachmentText;
+  const itemText = evidence.itemText;
+  if (hasPhrase(attachmentText, "procesverbal")) return false;
+
+  const hasReportHearingDocument =
+    /\braport[a-z0-9]*\b/.test(attachmentText) && /\bdegjes[a-z0-9]*\b/.test(attachmentText);
+  const consultationContext =
+    hasPhrase(attachmentText, "konsultim") ||
+    hasPhrase(itemText, "konsultim") ||
+    hasPhrase(itemText, "konsultime publike") ||
+    hasPhrase(itemText, "degjese publike") ||
+    hasPhrase(itemText, "degjesave publike");
+  const responseDocument =
+    hasPhrase(attachmentText, "raport permbledhes") ||
+    hasPhrase(attachmentText, "raport permbledhese") ||
+    hasPhrase(attachmentText, "permbledhje") ||
+    hasPhrase(attachmentText, "permbledhes") ||
+    hasPhrase(attachmentText, "permbledhese") ||
+    hasPhrase(attachmentText, "rekomandimeve") ||
+    hasPhrase(attachmentText, "pergjigje") ||
+    hasReportHearingDocument;
+
+  if (consultationContext && responseDocument) {
     return true;
   }
-  if (
-    (hasPhrase(text, "raport") || hasPhrase(text, "permbledhes") || hasPhrase(text, "permbledhese")) &&
-    hasPhrase(text, "konsultim")
-  ) {
-    return true;
-  }
-  return hasPhrase(text, "pergjigje") && hasPhrase(text, "konsultim");
+  return false;
 }
 
 function pickEvidence(evidenceRows, predicate, ranker = null) {
