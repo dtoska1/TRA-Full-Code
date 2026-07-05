@@ -107,8 +107,7 @@ function labelFromDocumentUrl(sourceUrl) {
 function collectShkoderKonsultimeDocuments($, pageUrl = DEFAULT_LISTING_URL) {
   const documents = [];
   const seen = new Set();
-  const scopes = $("article, .entry-content, main");
-  const root = scopes.length ? scopes : $("body");
+  const root = $("article, .entry-content, main");
 
   root.find("a[href]").each((_, el) => {
     const link = $(el);
