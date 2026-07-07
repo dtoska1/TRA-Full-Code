@@ -492,6 +492,16 @@ function parseManualUpload(req, res, next) {
   });
 }
 
+function hasPdfMagicBytes(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 4) return false;
+  return (
+    buffer[0] === 0x25 &&
+    buffer[1] === 0x50 &&
+    buffer[2] === 0x44 &&
+    buffer[3] === 0x46
+  );
+}
+
 pool.on("connect", (client) => {
   client
     .query("SET client_encoding TO 'UTF8'; SET statement_timeout TO '3000ms'")
