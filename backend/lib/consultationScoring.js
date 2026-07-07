@@ -107,10 +107,20 @@ function isDraftActEvidence(evidence) {
   );
 }
 
+function isNonTechnicalSummaryEvidence(attachmentText) {
+  return (
+    hasPhrase(attachmentText, "permbledhje jo teknike") ||
+    hasPhrase(attachmentText, "permbledhje joteknike") ||
+    hasPhrase(attachmentText, "jo teknike") ||
+    hasPhrase(attachmentText, "joteknike")
+  );
+}
+
 function isConsultationResponseEvidence(evidence) {
   const attachmentText = evidence.attachmentText;
   const itemText = evidence.itemText;
   if (hasPhrase(attachmentText, "procesverbal")) return false;
+  if (isNonTechnicalSummaryEvidence(attachmentText)) return false;
 
   const hasReportHearingDocument =
     /\braport[a-z0-9]*\b/.test(attachmentText) && /\bdegjes[a-z0-9]*\b/.test(attachmentText);
