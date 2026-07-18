@@ -158,3 +158,8 @@ Two Postgres containers run on the VPS (root@13.140.168.152). They are NOT the s
 
 ### Migration 032 status
 - Written/sampled against the WRONG store. Cannot run as-is. Re-ground all sampling against 5433, run migration-guard skill, back up 5433, THEN it's a run candidate.
+
+### Orphan status — CONFIRMED safe to retire (verified 2026-07-18)
+- `/opt/transparency-radar/docker-compose.yml` defines ONE service only: `postgres` on 5432, dev creds (`tra_dev`), `postgres_data` volume. No API, no Caddy, no dependents.
+- Definitively an orphan (dev-creds leftover from an early deploy, pre-dating the `/opt/tra-full` prod stack).
+- To retire (NOT urgent, do rested): `cd /opt/transparency-radar && docker compose down` (keeps volume). Only `docker compose down -v` after confirming the volume holds nothing worth keeping.
