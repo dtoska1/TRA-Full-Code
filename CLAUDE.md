@@ -131,3 +131,30 @@ All user-facing copy is in Albanian (sq). Municipality names, category labels (V
 - Do not run migrations without confirmation
 - All work happens on a feature branch — never commit directly to `main`
 - Keep UI copy in Albanian (sq) — do not introduce English-language user-facing strings
+
+## VPS Postgres topology — TWO containers, do not confuse (mapped 2026-07-18)
+
+Two Postgres containers run on the VPS (root@13.140.168.152). They are NOT the same DB.
+
+- **PRODUCTION → `tra_postgres` → host port 5433.**
+  - Stack: `/opt/tra-full` (the current, post-rebuild deploy).
+  - Backend `.env`: `DATABASE_URL=...@localhost:5433/tra`. App reads this; `radarvendor.com` serves it.
+  - Holds ALL consultation-scoring work (overrides, `consultation_scores` table).
+  - This is the ONLY canonical store. All tools, migrations, and queries must target 5433.
+
+- **ORPHAN → `transparency-radar-postgres-1` → host port 5432.**
+  - Stack: `/opt/transparency-radar/docker-compose.yml` (the OLD pre-rebuild repo path).
+  - Created 2026-06-23, ~3 weeks before scoring work. Has NO `consultation_scores` table.
+  - Leftover from before the rebuild moved to `/opt/tra-full`; old stack was never `compose down`ed.
+  - NOT production. Nothing of value confirmed on it. Safe to ignore.
+
+### Rules
+- Any tool/query/migration MUST target 5433 (`tra_postgres`). Verify `DATABASE_URL` byte-for-byte against `/opt/tra-full/backend/.env` before running anything real.
+- `docker exec tra_postgres psql` connects inside the container on 5432 (its internal port) — this is correct and reaches production. 5433 is the HOST-side mapping. A `-p 5433` inside `docker exec` will "connection refused" — testing artifact, ignore.
+- Before retiring the orphan: read `/opt/transparency-radar/docker-compose.yml` to confirm nothing live depends on the old stack, then `compose down` that stack. Not urgent.
+
+### Open thread
+- Last session assumed Claude Code read the orphan (5432), explaining its "zero overrides / totals 30/20/30/0/0". But 5432 has no `consultation_scores` table, so those totals can't have come from a plain query against it. Claude Code's real connection target is UNCONFIRMED. Do not carry "CC read 5432" forward as fact — print CC's resolved `DATABASE_URL` and observe it before re-grounding migration 032.
+
+### Migration 032 status
+- Written/sampled against the WRONG store. Cannot run as-is. Re-ground all sampling against 5433, run migration-guard skill, back up 5433, THEN it's a run candidate.
